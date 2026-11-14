@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Caretta particle body</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden;
+    font-family: "Source Sans Pro", "Segoe UI", system-ui, sans-serif; }
+  #wrap { position: relative; width: 100%; border-radius: 16px; overflow: hidden; background: #04060d;
+    user-select: none; -webkit-user-select: none; }
+  canvas { display: block; width: 100%; touch-action: none; }
+  #hud { position: absolute; top: 12px; left: 16px; right: 16px; color: #fff; pointer-events: none;
+    text-shadow: 0 1px 4px #000; }
+  #hud .t { font-size: 19px; font-weight: 700; letter-spacing: .2px; }
+  #hud .s { font-size: 12px; opacity: .65; margin-top: 2px; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 700;
+    margin-left: 8px; vertical-align: 2px; color: #fff; text-shadow: none; }
+  #labels { position: absolute; inset: 0; pointer-events: none; transition: opacity .45s; }
+  .lb { position: absolute; display: flex; align-items: center; gap: 6px; transform: translate(-5px, -50%);
+    font-size: 12px; font-weight: 600; color: #f3f5ff; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 6px #000; }
+  .lb.l { flex-direction: row-reverse; transform: translate(calc(-100% + 5px), -50%); }
+  .pu { width: 10px; height: 10px; border-radius: 50%; background: var(--c); flex: none;
+    animation: pu 1.8s ease-out infinite; }
+  @keyframes pu { 0% { box-shadow: 0 0 0 0 var(--c); } 70%, 100% { box-shadow: 0 0 0 12px rgba(0,0,0,0); } }
+  #tip { position: absolute; pointer-events: none; padding: 4px 9px; border-radius: 8px; font-size: 12px;
+    background: rgba(10,14,30,.88); color: #fff; border: 1px solid rgba(255,255,255,.18); opacity: 0;
+    transition: opacity .15s; white-space: nowrap; }
+  #chips { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: 6px;
+    justify-content: center; padding: 10px 10px 12px; background: linear-gradient(rgba(4,6,13,0), rgba(4,6,13,.92) 40%); }
+  .chip { border: 1px solid rgba(255,255,255,.22); background: rgba(255,255,255,.06); color: #e9ecff;
+    border-radius: 999px; padding: 4px 11px; font-size: 12px; cursor: pointer; display: flex; align-items: center;
+    gap: 6px; font-family: inherit; transition: background .2s, color .2s, border-color .2s; }
+  .chip:hover { background: rgba(255,255,255,.16); }
+  .chip.on { background: #fff; color: #0b0f1e; border-color: #fff; }
+  .chip:focus-visible { outline: 2px solid #8fb3ff; outline-offset: 2px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" aria-label="Interactive particle body map" role="img"></canvas>
+  <div id="labels"></div>
+  <div id="hud"></div>
+  <div id="tip"></div>
+  <div id="chips" role="toolbar" aria-label="Body systems"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------- constants
+  const SW = 600, SH = 900;                 // shape (drawing) space
+  const BS = 1.06, BX = 300, BY = 24;       // body space -> shape space
+  const TRANSITION_MS = 1750;
+  const TAU = Math.PI * 2;
+
+  const wrap = document.getElementById("wrap");
+  const cv = document.getElementById("c");
+  const ctx = cv.getContext("2d");
+  const hud = document.getElementById("hud");
+  const labelsEl = document.getElementById("labels");
+  const chipsEl = document.getElementById("chips");
+  const tip = document.getElementById("tip");
+
+  const buf = document.createElement("canvas"), bctx = buf.getContext("2d");
+  const glow = document.createElement("canvas"), gctx = glow.getContext("2d");
+  const bg = document.createElement("canvas"), bgctx = bg.getContext("2d");
+
+  let cssW = 0, cssH = 640, dpr = 1, cw = 0, ch = 0, sc = 1, offX = 0, offY = 0;
+  let img = null, data = null;
+  let N = 0, X, Y, TX, TY, SX, SY, MX, MY, DL, PH, OX, OY, CO, CN;
+  let view = null, trans = null, ready = false, height = 640;
+  let regions = [], regionMap = {}, overall = null;
+  const cache = {};
+  const mouse = { in: false, x: -1e4, y: -1e4 };
+  let repelActive = false, lastDraw = 0, visible = true, nonce = 0, hoverKey = null;
+  let bodyMask = null;
+  let pending = null, lastChipH = -1;   // value to send to Python once the morph has finished (keeps the rerun off the animation)
+
+  // ---------------------------------------------------------------- helpers
+  function rng(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Catmull-Rom spline through points (appends to the current path)
+  function smooth(g, pts, closed) {
+    const n = pts.length;
+    g.moveTo(pts[0][0], pts[0][1]);
+    const last = closed ? n : n - 1;
+    for (let i = 0; i < last; i++) {
+      const p0 = pts[closed ? (i - 1 + n) % n : Math.max(i - 1, 0)];
+      const p1 = pts[i];
+      const p2 = pts[closed ? (i + 1) % n : i + 1];
+      const p3 = pts[closed ? (i + 2) % n : Math.min(i + 2, n - 1)];
+      g.bezierCurveTo(
+        p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6,
+        p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6,
+        p2[0], p2[1]);
+    }
+    if (closed) g.closePath();
+  }
+  const mirX = (pts) => pts.map(([x, y]) => [-x, y]);          // body space mirror
+  const mirS = (pts) => pts.map(([x, y]) => [SW - x, y]);      // shape space mirror
+  function fillPath(g, pts, fill, stroke, lw) {
+    g.beginPath(); smooth(g, pts, true);
+    if (fill) { g.fillStyle = fill; g.fill(); }
+    if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw || 2; g.stroke(); }
+  }
+  function line(g, pts, stroke, lw) {
+    g.beginPath(); smooth(g, pts, false);
+    g.strokeStyle = stroke; g.lineWidth = lw; g.stroke();
+  }
+  function bodyT(g) { g.setTransform(BS, 0, 0, BS, BX, BY); }
+  function resetT(g) { g.setTransform(1, 0, 0, 1, 0, 0); }
+
+  // ---------------------------------------------------------------- anatomy
+  // Left half of a front-view adult silhouette (body units, ~8 heads tall)
+  const LHALF = [[-15,88],[-17,112],[-40,128],[-66,138],[-86,148],[-98,166],[-103,192],[-106,225],[-110,262],
+    [-116,300],[-124,340],[-130,380],[-134,410],[-140,440],[-142,468],[-134,492],[-124,494],[-118,470],[-114,446],
+    [-118,410],[-112,370],[-104,330],[-96,296],[-90,255],[-84,222],[-76,205],[-74,235],[-70,270],[-62,310],[-60,335],
+    [-66,365],[-74,395],[-76,430],[-72,480],[-62,540],[-60,565],[-64,600],[-58,650],[-44,710],[-40,735],[-48,760],
+    [-52,780],[-38,788],[-20,786],[-20,740],[-22,712],[-28,650],[-26,600],[-22,560],[-20,530],[-14,470],[-8,430],[0,418]];
+  const BODY = LHALF.concat(mirX(LHALF.slice(0, -1)).reverse());
+  const HEAD = [[0,0],[22,4],[33,24],[35,50],[31,72],[22,88],[10,97],[0,99],[-10,97],[-22,88],[-31,72],[-35,50],[-33,24],[-22,4]];
+
+  function silhouette(g, fill, stroke, lw) {
+    g.beginPath(); smooth(g, BODY, true); smooth(g, HEAD, true);
+    if (fill) { g.fillStyle = fill; g.fill(); }
+    if (stroke) {
+      g.lineJoin = "round"; g.lineCap = "round";
+      g.strokeStyle = stroke; g.lineWidth = lw;
+      g.beginPath(); smooth(g, BODY, false); g.stroke();
+      g.beginPath(); smooth(g, HEAD, true); g.stroke();
+      for (const s of [1, -1]) { g.beginPath(); g.ellipse(35 * s, 52, 5, 11, 0, 0, TAU); g.stroke(); }
+    }
+  }
+
+  function face(g) {
+    g.fillStyle = "rgba(255,255,255,0.7)";
+    for (const s of [1, -1]) { g.beginPath(); g.ellipse(12 * s, 50, 5, 2.4, 0, 0, TAU); g.fill(); }
+    g.lineWidth = 1.3; g.strokeStyle = "rgba(255,255,255,0.55)";
+    for (const s of [1, -1]) line(g, mirX([[-6,42],[-12,40],[-19,42]]).map(([x, y]) => [x * -s, y]), "rgba(255,255,255,0.55)", 1.3);
+    line(g, [[0,52],[-3,64],[2,67]], "rgba(255,255,255,0.5)", 1.2);
+    line(g, [[-8,79],[0,82],[8,79]], "rgba(255,150,160,0.75)", 1.6);
+  }
+
+  function muscles(g) {
+    const st = "rgba(255,110,125,0.42)";
+    g.lineCap = "round";
+    for (const s of [1, -1]) {
+      const m = (p) => p.map(([x, y]) => [x * s, y]);
+      line(g, m([[-8,130],[-35,127],[-64,138]]), "rgba(255,255,255,0.55)", 1.8); // clavicle
+      line(g, m([[-6,168],[-30,196],[-58,192],[-72,172]]), st, 1.6);             // pectoral
+      line(g, m([[-70,152],[-86,182],[-94,212]]), st, 1.5);                      // deltoid
+      line(g, m([[-92,232],[-98,262],[-102,292]]), st, 1.4);                     // biceps
+      line(g, m([[-104,320],[-116,360],[-124,398]]), st, 1.3);                   // forearm
+      line(g, m([[-30,222],[-30,300],[-26,380]]), st, 1.2);                      // rectus border
+      line(g, m([[-58,368],[-34,395],[-10,414]]), st, 1.5);                      // inguinal
+      line(g, m([[-62,440],[-50,490],[-40,545]]), st, 1.5);                      // vastus lateralis
+      line(g, m([[-30,438],[-36,490],[-38,540]]), st, 1.3);                      // rectus femoris
+      line(g, m([[-40,585],[-38,640],[-34,700]]), "rgba(255,255,255,0.4)", 1.3); // shin
+      line(g, m([[-58,590],[-60,625],[-52,660]]), st, 1.3);                      // calf
+      g.beginPath(); g.ellipse(-42 * s, 560, 8, 10, 0, 0, TAU); g.strokeStyle = "rgba(255,255,255,0.45)"; g.lineWidth = 1.3; g.stroke();
+    }
+    line(g, [[0,135],[0,300]], "rgba(255,255,255,0.35)", 1.2);
+    for (const y of [362, 384]) line(g, [[-24,y],[0,y + 2],[24,y]], st, 1.1);
+  }
+
+  function organsSmall(g) {
+    const r = rng(5);
+    // brain
+    g.save(); g.beginPath(); g.ellipse(0, 28, 25, 18, 0, 0, TAU);
+    g.fillStyle = "rgba(255,140,170,0.62)"; g.fill(); g.clip();
+    g.strokeStyle = "rgba(255,215,225,0.85)"; g.lineWidth = 1.1;
+    for (let k = 0; k < 14; k++) {
+      let x = -24 + r() * 48, y = 12 + r() * 32, a = r() * TAU;
+      g.beginPath(); g.moveTo(x, y);
+      for (let s = 0; s < 6; s++) { a += (r() - .5) * 2; x += Math.cos(a) * 4; y += Math.sin(a) * 4; g.lineTo(x, y); }
+      g.stroke();
+    }
+    g.restore();
+    // lungs + airway
+    const RL = [[-10,172],[-36,166],[-56,190],[-63,240],[-60,288],[-34,290],[-14,276],[-8,220]];
+    const LL = [[10,172],[36,166],[56,190],[63,240],[60,288],[40,292],[30,272],[18,252],[10,220]];
+    fillPath(g, RL, "rgba(255,165,185,0.62)", "rgba(255,215,225,0.85)", 1.4);
+    fillPath(g, LL, "rgba(255,165,185,0.62)", "rgba(255,215,225,0.85)", 1.4);
+    line(g, [[0,112],[0,180]], "rgba(240,244,255,0.85)", 3.2);
+    for (const s of [1, -1]) {
+      line(g, [[0,180],[-16 * s,196],[-28 * s,220]], "rgba(240,244,255,0.75)", 2.2);
+      line(g, [[-16 * s,196],[-36 * s,200],[-48 * s,215]], "rgba(240,244,255,0.6)", 1.5);
+      line(g, [[-28 * s,220],[-30 * s,250],[-40 * s,268]], "rgba(240,244,255,0.6)", 1.5);
+    }
+    // heart
+    g.save(); g.translate(12, 246); g.rotate(-0.35);
+    fillPath(g, [[-14,-16],[0,-19],[16,-16],[22,-4],[18,12],[6,26],[0,31],[-8,22],[-18,6],[-20,-6]],
+      "rgba(232,24,52,0.95)", "rgba(255,190,190,0.9)", 1.2);
+    g.restore();
+    line(g, [[6,232],[2,214],[14,206],[22,214]], "rgba(240,55,75,0.95)", 3.4);
+    // liver, stomach, gut, bladder
+    fillPath(g, [[-62,292],[-20,290],[12,298],[8,312],[-28,334],[-56,332]], "rgba(175,45,45,0.82)", null);
+    fillPath(g, [[14,296],[38,292],[54,310],[50,340],[30,350],[18,334],[24,318]], "rgba(255,150,100,0.82)", null);
+    g.beginPath();
+    for (let row = 0; row < 6; row++) {
+      const y = 354 + row * 8, dir = row % 2 ? -1 : 1;
+      for (let x = -34; x <= 34; x += 2) {
+        const xx = dir > 0 ? x : -x, yy = y + Math.sin(x * 0.45) * 2.4;
+        if (x === -34) g.moveTo(xx, yy); else g.lineTo(xx, yy);
+      }
+    }
+    g.strokeStyle = "rgba(240,120,140,0.72)"; g.lineWidth = 2.6; g.stroke();
+    line(g, [[-40,402],[-40,350],[40,350],[40,402]], "rgba(225,160,110,0.7)", 3.6);
+    g.beginPath(); g.ellipse(0, 412, 10, 7, 0, 0, TAU); g.fillStyle = "rgba(245,215,120,0.6)"; g.fill();
+  }
+
+  // ------------------------------------------------------------- shape: body
+  function drawOverview(g) {
+    bodyT(g);
+    silhouette(g, "rgba(225,232,255,0.11)", "rgba(255,255,255,1)", 3);
+    face(g);
+    muscles(g);
+    organsSmall(g);
+    resetT(g);
+  }
+
+  // ------------------------------------------------------------ shape: brain
+  function drawBrain(g) {
+    const r = rng(11);
+    g.lineCap = "round"; g.lineJoin = "round";
+    const cer = [[150,520],[128,430],[150,340],[210,272],[300,240],[392,258],[460,320],[485,410],[470,480],
+      [420,520],[350,530],[300,560],[230,562],[180,545]];
+    // spinal cord + brainstem behind
+    line(g, [[352,640],[350,720],[348,830]], "rgba(255,200,210,0.55)", 22);
+    fillPath(g, [[330,530],[376,530],[374,600],[364,700],[338,700],[332,600]], "rgba(255,185,200,0.55)", "rgba(255,225,232,0.9)", 3);
+    fillPath(g, cer, "rgba(255,150,175,0.34)", "rgba(255,218,228,0.97)", 5);
+    g.save(); g.beginPath(); smooth(g, cer, true); g.clip();
+    g.strokeStyle = "rgba(236,92,128,0.78)"; g.lineWidth = 3.2;
+    for (let k = 0; k < 85; k++) {
+      let x = 130 + r() * 360, y = 240 + r() * 320, a = r() * TAU;
+      g.beginPath(); g.moveTo(x, y);
+      for (let s = 0; s < 14; s++) { a += (r() - .5) * 1.9; x += Math.cos(a) * 11; y += Math.sin(a) * 11; g.lineTo(x, y); }
+      g.stroke();
+    }
+    g.restore();
+    line(g, [[302,244],[288,320],[318,385],[292,470]], "rgba(255,238,242,0.95)", 5);   // central sulcus
+    line(g, [[185,478],[255,436],[330,452],[405,418]], "rgba(255,238,242,0.95)", 5);   // lateral fissure
+    const cb = [[356,522],[420,500],[480,505],[502,548],[472,592],[410,600],[364,576]];
+    fillPath(g, cb, "rgba(255,118,150,0.48)", "rgba(255,212,222,0.97)", 4);
+    g.save(); g.beginPath(); smooth(g, cb, true); g.clip();
+    for (let k = 0; k < 9; k++) line(g, [[350,512 + k * 10],[430,500 + k * 12],[510,520 + k * 10]], "rgba(255,236,242,0.8)", 2.4);
+    g.restore();
+    // neural sparks
+    g.fillStyle = "rgba(255,255,255,0.95)";
+    for (let k = 0; k < 40; k++) { g.beginPath(); g.arc(160 + r() * 310, 260 + r() * 280, 1.6 + r() * 2, 0, TAU); g.fill(); }
+  }
+
+  // ------------------------------------------------------------ shape: heart
+  function drawHeart(g) {
+    const r = rng(21);
+    g.lineCap = "round"; g.lineJoin = "round";
+    line(g, [[236,395],[240,280],[242,185]], "rgba(105,118,235,0.88)", 34);                 // superior vena cava
+    line(g, [[230,560],[228,650],[226,720]], "rgba(105,118,235,0.7)", 28);                  // inferior vena cava
+    line(g, [[300,430],[290,300],[310,205],[372,198],[436,206],[452,265],[440,340],[444,560]], "rgba(236,48,70,0.96)", 40); // aorta
+    line(g, [[332,206],[322,118]], "rgba(236,60,80,0.92)", 13);
+    line(g, [[366,198],[368,108]], "rgba(236,60,80,0.92)", 13);
+    line(g, [[402,203],[418,122]], "rgba(236,60,80,0.92)", 13);
+    line(g, [[332,425],[356,330],[318,290]], "rgba(140,100,232,0.9)", 30);                  // pulmonary trunk
+    line(g, [[312,300],[230,272],[150,296]], "rgba(140,100,232,0.8)", 19);
+    line(g, [[336,300],[420,282],[476,318]], "rgba(140,100,232,0.8)", 19);
+    g.beginPath(); g.ellipse(208, 425, 56, 72, 0.15, 0, TAU);                               // right atrium
+    g.fillStyle = "rgba(190,30,64,0.62)"; g.fill(); g.strokeStyle = "rgba(255,190,200,0.9)"; g.lineWidth = 4; g.stroke();
+    g.beginPath(); g.ellipse(424, 392, 46, 38, -0.2, 0, TAU);                              // left atrium
+    g.fill(); g.stroke();
+    const ven = [[230,400],[300,385],[380,380],[440,420],[456,500],[420,592],[360,662],[320,694],[290,662],[220,582],[196,490]];
+    fillPath(g, ven, "rgba(208,24,46,0.62)", "rgba(255,195,195,0.97)", 5);
+    // coronary arteries
+    g.strokeStyle = "rgba(255,222,196,0.92)";
+    function cor(x, y, a, len, w, d) {
+      if (d <= 0 || len < 4) return;
+      const x2 = x + Math.cos(a) * len, y2 = y + Math.sin(a) * len;
+      g.lineWidth = w; g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo((x + x2) / 2 + (r() - .5) * 12, (y + y2) / 2, x2, y2); g.stroke();
+      cor(x2, y2, a + (r() - .5) * 0.5, len * 0.85, w * 0.82, d - 1);
+      if (r() < 0.7) cor(x2, y2, a + (r() < .5 ? -1 : 1) * (0.6 + r() * 0.5), len * 0.55, w * 0.6, d - 2);
+    }
+    cor(305, 420, 1.45, 46, 5, 6);
+    cor(268, 418, 2.2, 40, 4.4, 5);
+    cor(372, 412, 0.9, 40, 4.4, 5);
+    g.fillStyle = "rgba(255,255,255,0.22)";
+    g.beginPath(); g.ellipse(270, 480, 26, 46, 0.4, 0, TAU); g.fill();
+  }
+
+  // ------------------------------------------------------------ shape: lungs
+  function drawLungs(g) {
+    const r = rng(31);
+    g.lineCap = "round"; g.lineJoin = "round";
+    const RL = [[285,250],[230,235],[170,270],[130,380],[110,520],[118,640],[175,670],[250,660],[285,640],[290,420]];
+    const LL = [[315,250],[370,235],[430,270],[470,380],[490,520],[482,640],[425,670],[360,660],[330,640],[350,560],[372,500],[332,470],[310,420]];
+    fillPath(g, RL, "rgba(255,138,160,0.42)", "rgba(255,216,226,0.97)", 5);
+    fillPath(g, LL, "rgba(255,138,160,0.42)", "rgba(255,216,226,0.97)", 5);
+    line(g, [[140,470],[220,440],[286,420]], "rgba(255,232,238,0.7)", 3);
+    line(g, [[118,570],[200,530],[284,525]], "rgba(255,232,238,0.7)", 3);
+    line(g, [[482,450],[400,474],[338,562]], "rgba(255,232,238,0.7)", 3);
+    g.save();
+    g.beginPath(); smooth(g, RL, true); smooth(g, LL, true); g.rect(272, 100, 56, 260); g.clip();
+    g.fillStyle = "rgba(255,196,210,0.6)";
+    for (let k = 0; k < 260; k++) { g.beginPath(); g.arc(110 + r() * 380, 240 + r() * 430, 2 + r() * 3.5, 0, TAU); g.fill(); }
+    line(g, [[300,110],[300,300]], "rgba(236,242,255,0.97)", 30);
+    for (let y = 122; y < 296; y += 13) line(g, [[287,y],[300,y + 2],[313,y]], "rgba(150,162,215,0.95)", 3);
+    g.strokeStyle = "rgba(246,246,255,0.9)";
+    function br(x, y, a, len, w, d) {
+      if (d === 0 || len < 5) return;
+      const x2 = x + Math.cos(a) * len, y2 = y + Math.sin(a) * len;
+      g.lineWidth = w; g.beginPath(); g.moveTo(x, y); g.lineTo(x2, y2); g.stroke();
+      const sp = 0.38 + r() * 0.3;
+      br(x2, y2, a - sp, len * (0.7 + r() * 0.12), w * 0.7, d - 1);
+      br(x2, y2, a + sp * (0.8 + r() * 0.4), len * (0.66 + r() * 0.12), w * 0.7, d - 1);
+    }
+    br(300, 298, Math.PI / 2 + 0.78, 64, 15, 9);
+    br(300, 298, Math.PI / 2 - 0.82, 64, 15, 9);
+    g.restore();
+  }
+
+  // ------------------------------------------------------- shape: metabolism
+  function drawMetabolism(g) {
+    const r = rng(41);
+    g.lineCap = "round"; g.lineJoin = "round";
+    line(g, [[170,780],[170,520],[178,494],[210,488],[420,488],[446,496],[452,526],[452,742],[430,786],[380,796],[330,780]],
+      "rgba(222,156,108,0.86)", 36);                                                       // colon
+    for (let k = 0; k < 22; k++) {
+      const t = k / 21;
+      const pts = t < .3 ? [170, 780 - t / .3 * 270] : t < .65 ? [190 + (t - .3) / .35 * 240, 488] : [452, 500 + (t - .65) / .35 * 260];
+      g.fillStyle = "rgba(255,226,196,0.6)"; g.beginPath(); g.arc(pts[0], pts[1], 4, 0, TAU); g.fill();
+    }
+    g.beginPath();
+    for (let row = 0; row < 10; row++) {
+      const y = 540 + row * 22, dir = row % 2 ? -1 : 1;
+      for (let x = 0; x <= 190; x += 3) {
+        const xx = dir > 0 ? 215 + x : 405 - x, yy = y + Math.sin(x * 0.11) * 8;
+        if (x === 0 && row === 0) g.moveTo(xx, yy); else g.lineTo(xx, yy);
+      }
+    }
+    g.strokeStyle = "rgba(255,138,156,0.8)"; g.lineWidth = 11; g.stroke();                // small intestine
+    fillPath(g, [[120,300],[260,280],[362,300],[330,345],[260,392],[180,422],[130,402],[104,350]],
+      "rgba(158,40,46,0.66)", "rgba(255,182,172,0.95)", 4);                               // liver
+    line(g, [[255,286],[250,340],[230,402]], "rgba(255,190,180,0.7)", 3);
+    g.save(); g.translate(238, 408); g.rotate(0.3); g.beginPath(); g.ellipse(0, 0, 15, 26, 0, 0, TAU);
+    g.fillStyle = "rgba(118,206,112,0.85)"; g.fill(); g.restore();                         // gallbladder
+    const sto = [[350,300],[420,284],[470,318],[480,390],[442,442],[380,456],[330,442],[344,402],[380,392],[396,352],[362,330]];
+    fillPath(g, sto, "rgba(255,150,98,0.6)", "rgba(255,212,186,0.97)", 4);                 // stomach
+    g.save(); g.beginPath(); smooth(g, sto, true); g.clip();
+    for (let k = 0; k < 7; k++) line(g, [[360 + k * 14,318],[380 + k * 12,380],[364 + k * 10,440]], "rgba(255,222,200,0.7)", 2.4);
+    g.restore();
+    fillPath(g, [[250,452],[330,442],[420,452],[442,470],[402,482],[320,480],[256,476]], "rgba(250,212,110,0.8)", null); // pancreas
+    // glucose rings drifting in the blood
+    g.strokeStyle = "rgba(255,246,200,0.9)"; g.lineWidth = 3;
+    for (let k = 0; k < 7; k++) {
+      const cx = 90 + r() * 420, cy = 150 + r() * 110, rr = 10 + r() * 6;
+      g.beginPath();
+      for (let s = 0; s <= 6; s++) { const a = s / 6 * TAU + Math.PI / 6; const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr; s ? g.lineTo(px, py) : g.moveTo(px, py); }
+      g.stroke();
+    }
+  }
+
+  // --------------------------------------------------------- shape: immune
+  function drawImmune(g) {
+    const r = rng(51);
+    bodyT(g);
+    silhouette(g, "rgba(200,222,255,0.08)", "rgba(222,236,255,0.5)", 1.8);
+    g.lineCap = "round"; g.lineJoin = "round";
+    const vessels = [
+      [[0,400],[0,300],[2,200],[-6,140],[-18,114]],
+      [[-136,470],[-122,400],[-104,300],[-88,240],[-70,206],[-40,150],[-20,118]],
+      [[-40,770],[-36,690],[-38,570],[-42,480],[-40,406],[-20,372],[0,360]],
+    ];
+    const nodes = [[-22,112],[-18,126],[-70,200],[-64,216],[-104,300],[-15,350],[0,366],[-26,372],[-40,406],[-34,420],[-36,572]];
+    const all = vessels.concat(vessels.slice(1).map(mirX));
+    for (const v of all) {
+      line(g, v, "rgba(110,236,166,0.72)", 2.6);
+      for (let k = 1; k < v.length; k++) {
+        const [x, y] = v[k];
+        for (let b = 0; b < 3; b++) {
+          let xx = x, yy = y, a = r() * TAU; g.beginPath(); g.moveTo(xx, yy);
+          for (let s = 0; s < 4; s++) { a += (r() - .5); xx += Math.cos(a) * 7; yy += Math.sin(a) * 7; g.lineTo(xx, yy); }
+          g.strokeStyle = "rgba(140,245,190,0.38)"; g.lineWidth = 1.2; g.stroke();
+        }
+      }
+    }
+    for (const [x, y] of nodes.concat(mirX(nodes))) {
+      const rr = 4 + r() * 3;
+      g.beginPath(); g.arc(x, y, rr * 2.2, 0, TAU); g.fillStyle = "rgba(120,255,170,0.18)"; g.fill();
+      g.beginPath(); g.arc(x, y, rr, 0, TAU); g.fillStyle = "rgba(150,255,190,0.97)"; g.fill();
+    }
+    for (const s of [1, -1]) { g.beginPath(); g.ellipse(8 * s, 176, 9, 16, 0.2 * s, 0, TAU); g.fillStyle = "rgba(190,250,215,0.85)"; g.fill(); } // thymus
+    g.beginPath(); g.ellipse(46, 300, 11, 20, 0.5, 0, TAU); g.fillStyle = "rgba(186,62,118,0.9)"; g.fill();     // spleen
+    for (const s of [1, -1]) { g.beginPath(); g.ellipse(9 * s, 86, 4, 6, 0, 0, TAU); g.fillStyle = "rgba(160,245,190,0.9)"; g.fill(); } // tonsils
+    resetT(g);
+    for (let k = 0; k < 26; k++) {                                                          // white blood cells
+      const x = 110 + r() * 380, y = 90 + r() * 760, rr = 7 + r() * 5;
+      g.beginPath(); g.arc(x, y, rr, 0, TAU); g.strokeStyle = "rgba(255,255,255,0.85)"; g.lineWidth = 2; g.stroke();
+      g.fillStyle = "rgba(200,170,255,0.85)";
+      for (let l = 0; l < 3; l++) { g.beginPath(); g.arc(x + (r() - .5) * rr, y + (r() - .5) * rr, rr * 0.28, 0, TAU); g.fill(); }
+    }
+  }
+
+  // ---------------------------------------------------- shape: skeleton
+  function drawSkeleton(g) {
+    bodyT(g);
+    silhouette(g, "rgba(214,38,56,0.13)", "rgba(240,70,86,0.5)", 1.6);
+    const BONE = "rgba(246,243,236,0.95)", BONEF = "rgba(246,243,236,0.72)";
+    g.lineCap = "round"; g.lineJoin = "round";
+    function bone(x1, y1, x2, y2, w) {
+      g.strokeStyle = BONE; g.lineWidth = w; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+      g.fillStyle = BONE;
+      g.beginPath(); g.arc(x1, y1, w * 0.78, 0, TAU); g.fill();
+      g.beginPath(); g.arc(x2, y2, w * 0.78, 0, TAU); g.fill();
+    }
+    // skull
+    fillPath(g, [[0,8],[24,12],[31,35],[30,58],[22,72],[0,76],[-22,72],[-30,58],[-31,35],[-24,12]], BONEF, BONE, 2);
+    g.save(); g.globalCompositeOperation = "destination-out";
+    for (const s of [1, -1]) { g.beginPath(); g.ellipse(12 * s, 46, 8.5, 7.5, 0, 0, TAU); g.fill(); }
+    g.beginPath(); g.moveTo(0, 54); g.lineTo(-5, 66); g.lineTo(5, 66); g.closePath(); g.fill();
+    g.restore();
+    for (const s of [1, -1]) { g.beginPath(); g.ellipse(12 * s, 46, 9.5, 8.5, 0, 0, TAU); g.strokeStyle = BONE; g.lineWidth = 1.6; g.stroke(); }
+    line(g, [[-22,72],[-20,88],[-8,97],[8,97],[20,88],[22,72]], BONE, 3.5);
+    line(g, [[-14,78],[14,78]], BONE, 1.6);
+    // spine
+    g.fillStyle = BONE;
+    for (let y = 100; y < 405; y += 11) {
+      const w = 8 + (y - 100) / 305 * 9;
+      g.beginPath(); g.ellipse(0, y + 4, w / 2, 4, 0, 0, TAU); g.fill();
+    }
+    // shoulder girdle, sternum, ribs
+    for (const s of [1, -1]) {
+      line(g, [[-6 * s,132],[-40 * s,124],[-80 * s,142]], BONE, 5.5);
+      g.beginPath(); g.arc(-86 * s, 156, 10, 0, TAU); g.fillStyle = BONE; g.fill();
+    }
+    g.fillStyle = BONEF; g.beginPath(); g.ellipse(0, 196, 7, 58, 0, 0, TAU); g.fill();
+    for (let i = 0; i < 10; i++) {
+      const y = 150 + i * 14.5, wd = 58 - Math.abs(i - 3.5) * 2.4;
+      for (const s of [1, -1]) line(g, [[-6 * s, y], [-(wd * 0.75) * s, y - 4 + i * 0.4], [-wd * s, y + 16 + i], [-(wd - 6) * s, y + 34 + i * 2]], BONE, 3.6);
+    }
+    // pelvis
+    for (const s of [1, -1]) {
+      fillPath(g, mirX([[-8,385],[-30,370],[-62,366],[-72,384],[-60,410],[-40,420],[-22,432],[-10,428]]).map(([x, y]) => [-x * s, y]), BONEF, BONE, 2);
+      g.save(); g.globalCompositeOperation = "destination-out"; g.beginPath(); g.ellipse(-30 * s, 418, 9, 8, 0, 0, TAU); g.fill(); g.restore();
+    }
+    fillPath(g, [[-12,380],[12,380],[0,428]], BONE, null);
+    // limbs
+    for (const s of [1, -1]) {
+      bone(-88 * s, 164, -106 * s, 298, 10.5);          // humerus
+      bone(-104 * s, 308, -124 * s, 404, 5.5);          // radius
+      bone(-112 * s, 306, -133 * s, 402, 5.5);          // ulna
+      for (let f = 0; f < 5; f++) bone(-128 * s, 418, -(116 + f * 6.5) * s, 470 + (f === 0 ? -14 : (f === 2 ? 10 : 4)), 2.6); // hand
+      bone(-45 * s, 420, -44 * s, 546, 14);             // femur
+      g.beginPath(); g.arc(-44 * s, 560, 8, 0, TAU); g.fillStyle = BONE; g.fill(); // patella
+      bone(-42 * s, 574, -34 * s, 734, 10.5);           // tibia
+      bone(-56 * s, 578, -48 * s, 728, 4.5);            // fibula
+      for (let f = 0; f < 5; f++) bone(-38 * s, 748, -(22 + f * 7) * s, 784, 2.6); // foot
+    }
+    resetT(g);
+  }
+
+  // --------------------------------------------------- shape: radiation
+  function drawRadiation(g) {
+    const r = rng(61);
+    g.lineCap = "round";
+    for (let k = 0; k < 75; k++) {                                                          // cosmic-ray tracks
+      const x = r() * SW, y = r() * SH, a = r() * TAU, len = 110 + r() * 300;
+      g.strokeStyle = "rgba(255,214,90," + (0.22 + r() * 0.45).toFixed(2) + ")"; g.lineWidth = 1.2 + r() * 1.6;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); g.stroke();
+    }
+    g.setLineDash([16, 18]);
+    for (let k = 0; k < 3; k++) {
+      g.beginPath(); g.ellipse(300, 452, 200 + k * 42, 400 + k * 22, 0, 0, TAU);
+      g.strokeStyle = "rgba(170,120,255," + (0.5 - k * 0.12) + ")"; g.lineWidth = 3; g.stroke();
+    }
+    g.setLineDash([]);
+    bodyT(g);
+    silhouette(g, "rgba(230,236,255,0.24)", "rgba(255,255,255,0.95)", 2.2);
+    resetT(g);
+    // DNA helix in the chest
+    for (const ph of [0, Math.PI]) {
+      g.beginPath();
+      for (let y = 190; y <= 450; y += 3) { const x = 300 + Math.sin(y * 0.052 + ph) * 30; y === 190 ? g.moveTo(x, y) : g.lineTo(x, y); }
+      g.strokeStyle = "rgba(120,230,255,0.97)"; g.lineWidth = 4.2; g.stroke();
+    }
+    for (let y = 196; y <= 446; y += 12) {
+      const x1 = 300 + Math.sin(y * 0.052) * 30, x2 = 300 + Math.sin(y * 0.052 + Math.PI) * 30;
+      const broken = y === 304 || y === 388;
+      g.strokeStyle = broken ? "rgba(255,60,80,0.98)" : "rgba(255,255,255,0.72)"; g.lineWidth = broken ? 3.5 : 2;
+      g.beginPath(); g.moveTo(x1, y); g.lineTo(broken ? (x1 + x2) / 2 - 4 : x2, y); g.stroke();
+    }
+    // trefoil
+    g.fillStyle = "rgba(255,215,80,0.85)";
+    for (let k = 0; k < 3; k++) {
+      const a0 = -Math.PI / 2 + k * TAU / 3 - Math.PI / 6, a1 = a0 + Math.PI / 3;
+      g.beginPath(); g.arc(510, 110, 46, a0, a1); g.arc(510, 110, 12, a1, a0, true); g.closePath(); g.fill();
+    }
+    g.beginPath(); g.arc(510, 110, 7, 0, TAU); g.fill();
+  }
+
+  const DRAW = {
+    overview: drawOverview, brain: drawBrain, heart: drawHeart, lungs: drawLungs,
+    metabolism: drawMetabolism, immune: drawImmune, musculoskeletal: drawSkeleton, whole_body: drawRadiation,
+  };
+
+  // ------------------------------------------------------ sampling
+  function sample(name) {
+    const c = document.createElement("canvas"); c.width = SW; c.height = SH;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    DRAW[name](g);
+    const d = g.getImageData(0, 0, SW, SH).data;
+    const r = rng(1234 + name.length * 77);
+    const cand = new Uint32Array(SW * SH);
+    let m = 0;
+    for (let i = 3, p = 0; i < d.length; i += 4, p++) { const a = d[i]; if (a > 6 && r() * 255 < a) cand[m++] = p; }
+    const pos = new Float32Array(N * 2), col = new Uint32Array(N);
+    for (let k = 0; k < N; k++) {
+      const p = cand[(r() * m) | 0], i = p << 2;
+      pos[2 * k] = (p % SW) + r(); pos[2 * k + 1] = ((p / SW) | 0) + r();
+      // 0.78 so overlapping particles add up to a soft glow instead of clipping
+      col[k] = (((d[i] * 0.78) | 0) << 16) | (((d[i + 1] * 0.78) | 0) << 8) | ((d[i + 2] * 0.78) | 0);
+    }
+    return { pos, col };
+  }
+  function getShape(name) { return cache[name] || (cache[name] = sample(name)); }
+
+  function buildMask() {
+    const c = document.createElement("canvas"); c.width = SW; c.height = SH;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    bodyT(g); silhouette(g, "#fff", null); resetT(g);
+    const d = g.getImageData(0, 0, SW, SH).data;
+    bodyMask = new Uint8Array(SW * SH);
+    for (let i = 0, p = 0; p < bodyMask.length; i += 4, p++) bodyMask[p] = d[i + 3] > 100 ? 1 : 0;
+  }
+
+  // Which body system is under a point of the overview (shape coords)?
+  function regionAt(sx, sy) {
+    if (sx < 0 || sy < 0 || sx >= SW || sy >= SH) return null;
+    const inside = bodyMask[(sy | 0) * SW + (sx | 0)];
+    const bx = (sx - BX) / BS, by = (sy - BY) / BS;
+    if (!inside) return (by > -10 && by < 800 && Math.abs(bx) < 200) ? "whole_body" : null;
+    if (by < 100) return "brain";
+    if (Math.abs(bx) >= 74 && by < 500) return "immune";
+    if (by < 296) return Math.hypot(bx - 12, by - 248) < 26 ? "heart" : "lungs";
+    if (by < 416) return "metabolism";
+    return "musculoskeletal";
+  }
+
+  // ------------------------------------------------------ particles
+  function allocate() {
+    N = Math.max(6000, Math.min(14000, Math.round(cssW * cssH / 34)));
+    X = new Float32Array(N); Y = new Float32Array(N); TX = new Float32Array(N); TY = new Float32Array(N);
+    SX = new Float32Array(N); SY = new Float32Array(N); MX = new Float32Array(N); MY = new Float32Array(N);
+    DL = new Float32Array(N); PH = new Float32Array(N); OX = new Float32Array(N); OY = new Float32Array(N);
+    CO = new Uint32Array(N); CN = new Uint32Array(N);
+    for (let i = 0; i < N; i++) {
+      X[i] = TX[i] = -150 + Math.random() * (SW + 300);
+      Y[i] = TY[i] = -150 + Math.random() * (SH + 300);
+      PH[i] = Math.random() * TAU;
+      const v = 40 + (Math.random() * 60) | 0;
+      CO[i] = CN[i] = (v << 16) | (v << 8) | Math.min(255, v + 40);
+    }
+  }
+
+  function setView(v) {
+    if (!DRAW[v]) v = "overview";
+    if (v === view) return;
+    const first = view === null;
+    view = v;
+    const s = getShape(v);
+    const el = trans ? (performance.now() - trans.t0) / trans.D : 1;
+    for (let i = 0; i < N; i++) {
+      let u = trans ? (el - DL[i]) / 0.7 : 1;
+      CO[i] = trans && u < 0.5 ? CO[i] : CN[i];
+      SX[i] = X[i] + OX[i]; SY[i] = Y[i] + OY[i]; OX[i] = 0; OY[i] = 0;
+      const tx = s.pos[2 * i], ty = s.pos[2 * i + 1];
+      const a = Math.random() * TAU, rad = first ? 40 + Math.random() * 120 : 90 + Math.random() * 300;
+      MX[i] = (SX[i] + tx) * 0.5 + Math.cos(a) * rad;
+      MY[i] = (SY[i] + ty) * 0.5 + Math.sin(a) * rad;
+      TX[i] = tx; TY[i] = ty; CN[i] = s.col[i];
+      DL[i] = Math.random() * 0.3;
+    }
+    trans = { t0: performance.now(), D: first ? 2100 : TRANSITION_MS };
+    labelsEl.style.opacity = "0";
+    updateHud(); updateChips();
+  }
+
+  function finishTrans() {
+    trans = null;
+    CO.set(CN);
+    if (view === "overview") labelsEl.style.opacity = "1";
+    if (pending) { post("streamlit:setComponentValue", { value: pending, dataType: "json" }); pending = null; }
+    schedulePrefetch();
+  }
+
+  function schedulePrefetch() {
+    const idle = window.requestIdleCallback || ((f) => setTimeout(f, 120));
+    const todo = Object.keys(DRAW).filter((k) => !cache[k]);
+    if (!todo.length) return;
+    idle(() => { if (!trans) getShape(todo[0]); schedulePrefetch(); });
+  }
+
+  // ------------------------------------------------------ layout
+  function layout() {
+    cssW = Math.max(240, wrap.clientWidth); cssH = height;
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+    cw = Math.round(cssW * dpr); ch = Math.round(cssH * dpr);
+    cv.width = cw; cv.height = ch; cv.style.height = cssH + "px"; wrap.style.height = cssH + "px";
+    buf.width = cw; buf.height = ch;
+    img = bctx.createImageData(cw, ch); data = img.data;
+    glow.width = Math.max(1, cw >> 2); glow.height = Math.max(1, ch >> 2);
+    lastChipH = chipsEl.offsetHeight;
+    const chipH = (lastChipH || 64) + 4;          // chip bar may wrap on narrow screens
+    const avail = ch - (chipH + 46) * dpr;
+    sc = Math.min(cw / SW * 0.98, avail / SH);
+    offX = (cw - SW * sc) / 2; offY = 46 * dpr + (avail - SH * sc) / 2;
+    // background: deep-space gradient + a few stars, rendered once
+    bg.width = cw; bg.height = ch;
+    const gr = bgctx.createRadialGradient(cw / 2, ch * 0.42, 0, cw / 2, ch * 0.42, Math.max(cw, ch) * 0.75);
+    gr.addColorStop(0, "#131c3a"); gr.addColorStop(0.55, "#080c1c"); gr.addColorStop(1, "#03040a");
+    bgctx.fillStyle = gr; bgctx.fillRect(0, 0, cw, ch);
+    const r = rng(99);
+    for (let k = 0; k < 160; k++) {
+      bgctx.fillStyle = "rgba(255,255,255," + (0.15 + r() * 0.5).toFixed(2) + ")";
+      bgctx.fillRect(r() * cw, r() * ch, dpr * (r() < 0.9 ? 1 : 1.8), dpr * (r() < 0.9 ? 1 : 1.8));
+    }
+    if (!N) allocate();
+    placeLabels();
+  }
+
+  // ------------------------------------------------------ render loop
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (!visible || !N || !data) return;
+    const animating = trans !== null || mouse.in || repelActive;
+    if (!animating && now - lastDraw < 33) return;       // idle shimmer at ~30 fps
+    lastDraw = now;
+    let el = 0;
+    if (trans) { el = (now - trans.t0) / trans.D; if (el >= 1) { el = 1; } }
+    const t = now * 0.001, W = cw, H = ch, s = Math.max(2, Math.round(1.55 * dpr)), row = W << 2;
+    const mx = mouse.x, my = mouse.y, R = 42, R2 = R * R, useMouse = mouse.in;
+    const _sc = sc, _ox = offX, _oy = offY, d = data, tr = trans !== null;
+    let maxOff = 0;
+    d.fill(0);
+    for (let i = 0; i < N; i++) {
+      let x, y, c;
+      if (tr) {
+        let u = (el - DL[i]) / 0.7; u = u < 0 ? 0 : u > 1 ? 1 : u;
+        const e = u < 0.5 ? 4 * u * u * u : 1 - ((-2 * u + 2) * (-2 * u + 2) * (-2 * u + 2)) / 2, a = 1 - e;
+        x = a * a * SX[i] + 2 * a * e * MX[i] + e * e * TX[i];
+        y = a * a * SY[i] + 2 * a * e * MY[i] + e * e * TY[i];
+        c = u < 0.5 ? CO[i] : CN[i];
+      } else {
+        const ph = PH[i];
+        x = TX[i] + Math.sin(t * 1.7 + ph) * 0.75;
+        y = TY[i] + Math.cos(t * 1.3 + ph * 1.3) * 0.75;
+        c = CN[i];
+      }
+      X[i] = x; Y[i] = y;
+      let ox = OX[i], oy = OY[i];
+      if (useMouse) {
+        const dx = x + ox - mx, dy = y + oy - my, d2 = dx * dx + dy * dy;
+        if (d2 < R2 && d2 > 0.01) { const dd = Math.sqrt(d2), f = (1 - dd / R) * 4.2; ox += dx / dd * f; oy += dy / dd * f; }
+      }
+      if (ox !== 0 || oy !== 0) {
+        ox *= 0.9; oy *= 0.9;
+        if (ox < 0.02 && ox > -0.02 && oy < 0.02 && oy > -0.02) { ox = 0; oy = 0; }
+        const ao = ox < 0 ? -ox : ox; if (ao > maxOff) maxOff = ao;
+        OX[i] = ox; OY[i] = oy;
+      }
+      const px = (_ox + (x + ox) * _sc) | 0, py = (_oy + (y + oy) * _sc) | 0;
+      if (px < 0 || py < 0 || px > W - s || py > H - s) continue;
+      const r = (c >>> 16) & 255, g = (c >>> 8) & 255, b = c & 255;
+      let idx = (py * W + px) << 2;
+      for (let yy = 0; yy < s; yy++) {
+        let k = idx;
+        for (let xx = 0; xx < s; xx++) { d[k] += r; d[k + 1] += g; d[k + 2] += b; d[k + 3] = 255; k += 4; }
+        idx += row;
+      }
+    }
+    repelActive = maxOff > 0;
+    if (trans && el >= 1) finishTrans();
+    bctx.putImageData(img, 0, 0);
+    ctx.globalCompositeOperation = "copy"; ctx.drawImage(bg, 0, 0);
+    ctx.globalCompositeOperation = "lighter";
+    gctx.clearRect(0, 0, glow.width, glow.height);
+    gctx.drawImage(buf, 0, 0, glow.width, glow.height);       // cheap bloom: downsample…
+    ctx.globalAlpha = 0.9; ctx.drawImage(glow, 0, 0, cw, ch); // …and upscale smoothly
+    ctx.globalAlpha = 1; ctx.drawImage(buf, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  // ------------------------------------------------------ DOM: HUD, chips, labels
+  const ANCHORS = {
+    brain: [0, 30, "r"], lungs: [-42, 232, "l"], heart: [14, 248, "r"], metabolism: [4, 322, "r"],
+    immune: [-112, 345, "l"], musculoskeletal: [44, 610, "r"], whole_body: [104, 12, "r"],
+  };
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m])); }
+
+  function updateHud() {
+    if (!view) return;
+    let title, st;
+    if (view === "overview") { title = "Full body"; st = overall; }
+    else { const r = regionMap[view] || {}; title = r.name || view; st = r; }
+    const pill = st && st.color ? '<span class="pill" style="background:' + esc(st.color) + '">' + esc(st.icon || "") + " " + esc(st.label || "") + "</span>" : "";
+    const hint = view === "overview" ? "Click a body system — or hover to push the particles" : esc(N.toLocaleString()) + " particles · choose “Full body” to return";
+    hud.innerHTML = '<div class="t">' + esc(title) + pill + '</div><div class="s">' + hint + "</div>";
+  }
+
+  function updateChips() {
+    for (const b of chipsEl.children) b.classList.toggle("on", b.dataset.k === view);
+  }
+
+  function buildChips() {
+    chipsEl.innerHTML = "";
+    const items = [{ key: "overview", short: "Full body", color: overall && overall.color }].concat(regions);
+    for (const it of items) {
+      const b = document.createElement("button");
+      b.className = "chip"; b.dataset.k = it.key; b.type = "button";
+      b.title = it.name ? it.name + (it.label ? " — " + it.label : "") : "Full body";
+      b.innerHTML = '<span class="dot" style="background:' + esc(it.color || "#9aa0a6") + '"></span>' + esc(it.short || it.key);
+      b.addEventListener("click", () => choose(it.key));
+      chipsEl.appendChild(b);
+    }
+    updateChips();
+  }
+
+  function buildLabels() {
+    labelsEl.innerHTML = "";
+    for (const r of regions) {
+      const a = ANCHORS[r.key]; if (!a) continue;
+      const el = document.createElement("div");
+      el.className = "lb" + (a[2] === "l" ? " l" : ""); el.dataset.k = r.key;
+      el.innerHTML = '<span class="pu" style="--c:' + esc(r.color) + '"></span><span>' + esc(r.short) + "</span>";
+      labelsEl.appendChild(el);
+    }
+    placeLabels();
+  }
+
+  function placeLabels() {
+    if (!labelsEl.children.length || !cw) return;
+    for (const el of labelsEl.children) {
+      const a = ANCHORS[el.dataset.k];
+      el.style.left = ((offX + (BX + a[0] * BS) * sc) / dpr).toFixed(1) + "px";
+      el.style.top = ((offY + (BY + a[1] * BS) * sc) / dpr).toFixed(1) + "px";
+    }
+  }
+
+  // ------------------------------------------------------ input
+  function toShape(ev) {
+    const rc = cv.getBoundingClientRect();
+    return [((ev.clientX - rc.left) * dpr - offX) / sc, ((ev.clientY - rc.top) * dpr - offY) / sc, ev.clientX - rc.left, ev.clientY - rc.top];
+  }
+  cv.addEventListener("pointermove", (ev) => {
+    const [x, y, cx, cy] = toShape(ev);
+    mouse.in = true; mouse.x = x; mouse.y = y;
+    hoverKey = view === "overview" && !trans && bodyMask ? regionAt(x, y) : null;
+    cv.style.cursor = hoverKey ? "pointer" : "default";
+    if (hoverKey && regionMap[hoverKey]) {
+      const r = regionMap[hoverKey];
+      tip.innerHTML = esc(r.name) + " · " + esc(r.icon) + " " + esc(r.label);
+      tip.style.left = Math.min(cx + 14, cssW - 200) + "px"; tip.style.top = (cy + 12) + "px"; tip.style.opacity = "1";
+    } else tip.style.opacity = "0";
+  });
+  cv.addEventListener("pointerleave", () => { mouse.in = false; mouse.x = mouse.y = -1e4; tip.style.opacity = "0"; hoverKey = null; });
+  cv.addEventListener("click", (ev) => {
+    if (view !== "overview" || trans) return;
+    const [x, y] = toShape(ev);
+    const k = regionAt(x, y);
+    if (k) choose(k);
+  });
+
+  // ------------------------------------------------------ Streamlit bridge (component protocol v1)
+  function post(type, obj) { window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, obj || {}), "*"); }
+
+  function choose(k) {
+    if (k === view) return;
+    tip.style.opacity = "0";
+    setView(k);
+    pending = { view: k, nonce: Date.now() + "-" + (++nonce) };
+  }
+
+  function onRender(a) {
+    regions = Array.isArray(a.regions) ? a.regions : [];
+    regionMap = {}; for (const r of regions) regionMap[r.key] = r;
+    overall = a.overall || null;
+    const h = Math.max(380, Math.min(1200, +a.height || 640));
+    buildChips();
+    if (!ready || h !== height) {
+      height = h; layout();
+      post("streamlit:setFrameHeight", { height: height });
+      if (!bodyMask) buildMask();
+      ready = true;
+    }
+    buildLabels();
+    if (ready && chipsEl.offsetHeight !== lastChipH) layout();
+    if (!pending) setView(a.view || "overview");   // ignore stale args while a local choice is in flight
+    updateHud(); updateChips();
+  }
+
+  window.addEventListener("message", (ev) => {
+    const d = ev.data;
+    if (d && d.type === "streamlit:render") onRender(d.args || {});
+  });
+
+  new ResizeObserver(() => { if (ready && Math.abs(wrap.clientWidth - cssW) > 1) layout(); }).observe(wrap);
+  document.addEventListener("visibilitychange", () => { visible = !document.hidden; });
+  if ("IntersectionObserver" in window) new IntersectionObserver((es) => { visible = es[0].isIntersecting && !document.hidden; }).observe(wrap);
+
+  requestAnimationFrame(frame);
+  post("streamlit:componentReady", { apiVersion: 1 });
+
+  // Standalone preview (opened directly in a browser, not inside Streamlit)
+  if (window.parent === window) {
+    const demo = ["brain","lungs","heart","metabolism","immune","musculoskeletal","whole_body"];
+    const names = { brain: "Brain & behaviour", lungs: "Lungs & breathing", heart: "Heart & blood vessels", metabolism: "Metabolism & nutrition", immune: "Immune system", musculoskeletal: "Bones & muscles", whole_body: "Whole-body radiation" };
+    onRender({ view: "overview", height: 680, overall: { color: "#E0A800", icon: "▲", label: "Watch" },
+      regions: demo.map((k) => ({ key: k, name: names[k], short: names[k].split(" ")[0], color: "#2E9D5B", icon: "●", label: "Nominal" })) });
+  }
+})();
+</script>
+</body>
+</html>
