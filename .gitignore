@@ -1,8 +1,13 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
 venv/
 .env
 *.db
-.pytest_cache/
-#caretta health
+*.sqlite3
+data/photos/
+.streamlit/secrets.toml
+.DS_Store
+.idea/
+.vscode/
