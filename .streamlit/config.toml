@@ -1,0 +1,64 @@
+# Caretta site settings, read automatically when the app is started from the repo folder.
+# Visual system: deep navy / indigo backgrounds (never pure black), one warm accent (amber),
+# Fraunces for headings and Inter for text and numbers (both SIL OFL, served from app/ui/static/fonts).
+
+[server]
+port = 8501
+headless = false            # open the browser automatically
+runOnSave = false
+enableStaticServing = true  # serves app/ui/static (fonts, favicon)
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+primaryColor = "#F5B041"              # amber, the one warm accent
+backgroundColor = "#0B0F2A"           # deep navy
+secondaryBackgroundColor = "#161C46"  # indigo
+textColor = "#ECEEFB"
+linkColor = "#FFD48A"
+borderColor = "#2C3570"
+showWidgetBorder = true
+font = "Inter"
+headingFont = "Fraunces"
+baseRadius = "0.6rem"
+buttonRadius = "0.6rem"
+redColor = "#FF7A7A"
+orangeColor = "#FB923C"
+yellowColor = "#EAD94C"
+greenColor = "#4FD1A5"
+blueColor = "#8EA2FF"
+violetColor = "#A78BFA"
+chartCategoricalColors = ["#F5B041", "#8EA2FF", "#4FD1A5", "#FF7A7A", "#A78BFA", "#EAD94C"]
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "app/static/fonts/inter-latin-wght-normal.woff2"
+weight = "100 900"
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "app/static/fonts/inter-latin-ext-wght-normal.woff2"
+weight = "100 900"
+unicodeRange = "U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF"
+
+[[theme.fontFaces]]
+family = "Fraunces"
+url = "app/static/fonts/fraunces-latin-wght-normal.woff2"
+weight = "100 900"
+
+[[theme.fontFaces]]
+family = "Fraunces"
+url = "app/static/fonts/fraunces-latin-ext-wght-normal.woff2"
+weight = "100 900"
+unicodeRange = "U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF"
+
+[theme.sidebar]
+backgroundColor = "#12163D"           # indigo
+secondaryBackgroundColor = "#1C2257"
+borderColor = "#2C3570"

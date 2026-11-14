@@ -44,8 +44,10 @@ class IndicatorStatus:
 class TrendAlert:
     indicator: str
     status: str
-    title: str
+    title: str          # precise, clinical wording (reports for the medical team)
     message: str
+    kind: str = ""      # persistent | sleep_debt | hr_drift | low_mood | dose — used for crew-facing wording
+    value: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -170,6 +172,8 @@ def detect_trends(
                     f"{INDICATORS[ind].name}: out of range {n} days in a row",
                     "A persistent deviation is more meaningful than a single reading. "
                     "Review the guidance and discuss it at the next medical conference.",
+                    "persistent",
+                    n,
                 )
             )
 
@@ -185,6 +189,8 @@ def detect_trends(
                     f"Sleep debt: {avg:.1f} h/night average over {len(sleep)} days",
                     "Chronic short sleep degrades attention and mood. Protect the sleep period, "
                     "use eye mask/earplugs and ask the crew to review the schedule.",
+                    "sleep_debt",
+                    float(avg),
                 )
             )
 
@@ -201,6 +207,8 @@ def detect_trends(
                     f"Resting heart rate up {100 * (recent / baseline - 1):.0f}% vs. your baseline",
                     f"Baseline {baseline:.0f} bpm, last 3 days {recent:.0f} bpm. Check hydration, "
                     "temperature, sleep and training load.",
+                    "hr_drift",
+                    float(100 * (recent / baseline - 1)),
                 )
             )
 
@@ -214,6 +222,8 @@ def detect_trends(
                 f"Low mood for several days (average {mood.mean():.1f}/5)",
                 "Consider a private conference with the behavioural health team and a call with "
                 "family. You are not alone in this.",
+                "low_mood",
+                float(mood.mean()),
             )
         )
 
@@ -227,6 +237,8 @@ def detect_trends(
                 RED if frac >= 0.8 else YELLOW,
                 f"Cumulative dose {dose:.0f} mSv ({100 * frac:.0f}% of career limit)",
                 "Flight surgeons and radiation health officers should review exposure planning.",
+                "dose",
+                float(dose),
             )
         )
 

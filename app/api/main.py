@@ -27,7 +27,10 @@ from app.api.schemas import (
     SimulateRequest,
     SimulateResult,
     StatusReport,
+    TriageRequest,
+    TriageStep,
 )
+from app.core.diagnosis import Question, assess, walk
 from app.core.indicators import HAZARDS, INDICATORS, REGIONS
 from app.core.recommend import downlink_report, recommendations_for
 from app.core.simulate import simulate_mission
@@ -194,6 +197,27 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         _env(environment)
         df, statuses, alerts, recs = _build_report(conn, astronaut_id, environment, 30)
         return downlink_report(astronaut_id, environment, statuses, alerts, recs, cumulative_dose(df))
+
+    @app.post("/diagnosis", response_model=TriageStep, tags=["diagnosis"])
+    def diagnosis(req: TriageRequest, conn=Depends(get_conn)) -> TriageStep:
+        """Step through the triage: send the answers so far, get the next question or the final assessment."""
+        try:
+            _, current = walk(req.answers)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if isinstance(current, Question):
+            return TriageStep(done=False, question_id=current.id, question=current.text, hint=current.hint or None,
+                              options=[o.label for o in current.options])
+        df = db.fetch_readings(conn, req.astronaut_id, environment=req.environment)
+        result = assess(req.answers, evaluate_latest(df, req.environment), req.environment).to_dict()
+        if req.save:
+            result["id"] = db.insert_diagnosis(conn, req.astronaut_id, result, req.environment)
+        return TriageStep(done=True, assessment=result)
+
+    @app.get("/diagnosis/{astronaut_id}", tags=["diagnosis"])
+    def diagnosis_history(astronaut_id: str, environment: str | None = None, conn=Depends(get_conn)) -> list[dict]:
+        df = db.fetch_diagnoses(conn, astronaut_id, environment)
+        return [{**r, "ts": r["ts"].isoformat()} for r in df.to_dict("records")]
 
     @app.post("/simulate", response_model=SimulateResult, status_code=201, tags=["demo"])
     def simulate(req: SimulateRequest, conn=Depends(get_conn)) -> SimulateResult:

@@ -110,3 +110,27 @@ class SimulateRequest(BaseModel):
 class SimulateResult(BaseModel):
     astronaut_id: str
     inserted: int
+
+
+class TriageRequest(BaseModel):
+    astronaut_id: str = Field(..., min_length=1, max_length=32, examples=["CDR"])
+    environment: str = DEFAULT_ENVIRONMENT
+    answers: list[int] = Field(..., description="Index of the chosen option for each question, in order",
+                               examples=[[4, 1, 0, 0]])
+    save: bool = True
+
+    @field_validator("environment")
+    @classmethod
+    def _known_env(cls, v: str) -> str:
+        if v not in ENVIRONMENTS:
+            raise ValueError(f"unknown environment, expected one of {sorted(ENVIRONMENTS)}")
+        return v
+
+
+class TriageStep(BaseModel):
+    done: bool
+    question_id: str | None = None
+    question: str | None = None
+    hint: str | None = None
+    options: list[str] = []
+    assessment: dict | None = None

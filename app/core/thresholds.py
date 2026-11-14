@@ -24,11 +24,37 @@ UNKNOWN = "unknown"
 SEVERITY = {UNKNOWN: 0, GREEN: 1, YELLOW: 2, RED: 3}
 
 STATUS_LABELS = {
-    GREEN: "Nominal",
-    YELLOW: "Watch",
+    GREEN: "Smooth sailing",
+    YELLOW: "Shifting tides",
     RED: "Act now",
-    UNKNOWN: "No data",
+    UNKNOWN: "No reading yet",
 }
+
+#: Problems that build up over days. A red value here is "Needs care", not an emergency.
+SLOW_BUILDING = {"sleep_hours", "mood", "exercise_minutes"}
+NEEDS_CARE = "Needs care"
+
+#: One line under each label, written the way a doctor who knows you would say it.
+STATUS_HINTS = {
+    GREEN: "Everything looks steady. Keep doing what you're doing.",
+    YELLOW: "A few readings are drifting. Nothing urgent, but let's keep an eye on them.",
+    NEEDS_CARE: "This one needs care today. Your care team has been looped in, and you're not alone.",
+    RED: "This needs your attention right now. The steps are below, and your care team is with you.",
+    UNKNOWN: "We don't have this one yet. A quick measurement will fill it in.",
+}
+
+
+def status_label(status: str, indicator: str | None = None) -> str:
+    """Human label for a status; red splits into 'Needs care' (slow-building) and 'Act now' (acute)."""
+    if status == RED and indicator in SLOW_BUILDING:
+        return NEEDS_CARE
+    return STATUS_LABELS[status]
+
+
+def status_hint(status: str, indicator: str | None = None) -> str:
+    if status == RED and indicator in SLOW_BUILDING:
+        return STATUS_HINTS[NEEDS_CARE]
+    return STATUS_HINTS[status]
 
 Band = tuple[float, float]
 
