@@ -5,17 +5,16 @@ import pandas as pd
 from app.core.indicators import CORE_INDICATORS, INDICATORS
 from app.core.recommend import (
     CMO,
+    DAILY_TASKS,
     GUIDANCE,
     SELF,
     SURGEON,
-    badges,
     downlink_report,
-    level_for,
     recommend,
     recommendations_for,
     streak_days,
+    weekly_review,
     task_progress,
-    xp_total,
 )
 from app.core.status import detect_trends, evaluate_snapshot
 from app.core.thresholds import GREEN, RED, UNKNOWN, YELLOW, classify
@@ -66,25 +65,66 @@ def _complete_day(day):
     return pd.DataFrame({"ts": ts, "indicator": CORE_INDICATORS, "value": [INDICATORS[k].default for k in CORE_INDICATORS]})
 
 
-def test_streak_and_xp():
+def test_streak():
     today = date(2026, 3, 10)
     df = pd.concat([_complete_day(today - timedelta(days=i)) for i in range(4)])
     assert streak_days(df, today) == 4
-    # yesterday-ending streak still counts if today not done yet
+    # a streak ending yesterday still counts if today isn't done yet
     assert streak_days(df, today + timedelta(days=1)) == 4
     assert streak_days(df, today + timedelta(days=3)) == 0
-    assert xp_total(df) > 4 * 25
-    earned = {b["name"] for b in badges(df, today) if b["earned"]}
-    assert {"First Contact", "Orbit Keeper"} <= earned
-    assert "Week in Space" not in earned
 
 
-def test_level_progression():
-    assert level_for(0)["name"] == "Cadet"
-    lv = level_for(400)
-    assert lv["name"] == "Flight Engineer" and lv["next_name"] == "Mission Specialist"
-    assert 0 < lv["progress"] < 1
-    assert level_for(10_000)["next_name"] is None
+def _week(day, sleep, exercise, full=True):
+    rows = []
+    for k in range(7):
+        d = datetime.combine(day - timedelta(days=k), datetime.min.time())
+        inds = CORE_INDICATORS + ["radiation_dose"] if full else ["heart_rate"]
+        for ind in inds:
+            v = {"sleep_hours": sleep[k], "exercise_minutes": exercise[k]}.get(ind, INDICATORS[ind].default)
+            rows.append({"ts": d + timedelta(hours=8), "indicator": ind, "value": v})
+    return pd.DataFrame(rows)
+
+
+def test_weekly_review_good_week():
+    today = date(2026, 3, 10)
+    df = _week(today, [7.5] * 7, [100] * 7)
+    r = weekly_review(df, "iss", today=today, now=datetime(2026, 3, 10, 23))
+    h = {x["id"]: x for x in r["habits"]}
+    assert h["measurements"]["ratio"] == 1.0 and h["measurements"]["status"] == GREEN
+    assert h["sleep"]["value"] == 7 and h["exercise"]["value"] == 7 and h["checkins"]["value"] == 7
+    assert r["focus"] is None
+    assert "xp" not in str(r).lower()
+
+
+def test_weekly_review_points_at_the_weakest_habit():
+    today = date(2026, 3, 10)
+    df = _week(today, [5.5, 6, 6.5, 7.5, 5, 6, 6], [100] * 7)
+    r = weekly_review(df, "iss", today=today, now=datetime(2026, 3, 10, 23))
+    h = {x["id"]: x for x in r["habits"]}
+    assert h["sleep"]["value"] == 1 and h["sleep"]["status"] == RED
+    assert "Sleep" in r["focus"]
+
+
+def test_weekly_review_uses_environment_exercise_target():
+    today = date(2026, 3, 10)
+    df = _week(today, [8] * 7, [45] * 7)
+    iss = {x["id"]: x for x in weekly_review(df, "iss", today=today, now=datetime(2026, 3, 10, 23))["habits"]}
+    rover = {x["id"]: x for x in weekly_review(df, "rover", today=today, now=datetime(2026, 3, 10, 23))["habits"]}
+    assert iss["exercise"]["value"] == 0 and rover["exercise"]["value"] == 7
+    assert "90" in iss["exercise"]["label"] and "30" in rover["exercise"]["label"]
+
+
+def test_weekly_review_ignores_tasks_not_due_yet_and_compares_weeks():
+    today = date(2026, 3, 10)
+    df = _week(today, [8] * 7, [100] * 7, full=False)
+    early = weekly_review(df, "iss", today=today, now=datetime(2026, 3, 10, 6))
+    late = weekly_review(df, "iss", today=today, now=datetime(2026, 3, 10, 23))
+    m_early = early["habits"][0]["target"]
+    m_late = late["habits"][0]["target"]
+    assert m_early == m_late - len(DAILY_TASKS)  # nothing is due at 6:00 today
+    assert late["habits"][0]["status"] == RED and late["trend"] is None
+    both = pd.concat([_week(today, [8] * 7, [100] * 7), _week(today - timedelta(days=7), [8] * 7, [100] * 7, full=False)])
+    assert weekly_review(both, "iss", today=today, now=datetime(2026, 3, 10, 23))["trend"] == "better"
 
 
 def test_task_progress_states():
@@ -102,7 +142,7 @@ def test_downlink_report_contains_table_and_escalation():
     alerts = detect_trends(df)
     md = downlink_report("CDR", "iss", statuses, alerts, recommendations_for(statuses, alerts), 12.3)
     assert "# Caretta health downlink — CDR" in md
-    assert "flight surgeon review requested" in md
+    assert "care team looped in" in md
     assert "| Resting heart rate | 130 bpm |" in md
     assert "12.3 mSv" in md
 

@@ -11,6 +11,8 @@ from datetime import date, datetime, timedelta
 
 import pandas as pd
 
+from app.core.companion import alert_text, lc
+from app.core.companion import overall as companion_overall
 from app.core.indicators import CORE_INDICATORS, INDICATORS
 from app.core.status import IndicatorStatus, TrendAlert, normalize
 from app.core.thresholds import (
@@ -18,11 +20,11 @@ from app.core.thresholds import (
     GREEN,
     RED,
     SEVERITY,
-    STATUS_LABELS,
     UNKNOWN,
     YELLOW,
     direction,
     green_range,
+    status_label,
 )
 
 SELF = "self"
@@ -231,15 +233,15 @@ def recommend(
         return Recommendation(
             indicator,
             UNKNOWN,
-            f"No recent {ind.name.lower()} reading",
+            f"We don't have a recent {lc(ind.name)} reading yet",
             [f"How to measure: {ind.how_to_measure}"],
         )
     if status == GREEN:
-        return Recommendation(indicator, GREEN, f"{ind.name}: {STATUS_LABELS[GREEN]}", [GREEN_TIPS[indicator]])
+        return Recommendation(indicator, GREEN, f"Your {lc(ind.name)} looks steady", [GREEN_TIPS[indicator]])
 
     d = direction(indicator, value, environment)
     lo, hi = green_range(indicator, environment)
-    target = f"target {lo:g}–{hi:g} {ind.unit}" if hi != float("inf") else f"target ≥ {lo:g} {ind.unit}"
+    target = f"usually {lo:g}–{hi:g} {ind.unit}" if hi != float("inf") else f"usually {lo:g} {ind.unit} or more"
     actions = GUIDANCE.get(indicator, {}).get(d, {}).get(status) or [
         "Re-measure and inform the crew medical officer if it persists."
     ]
@@ -248,7 +250,7 @@ def recommend(
     return Recommendation(
         indicator,
         status,
-        f"{ind.name} {word}: {ind.format(value)} ({target})",
+        f"Your {lc(ind.name)} is {word} at {ind.format(value)} ({target})",
         list(actions),
         contact,
         escalate=status == RED,
@@ -269,12 +271,13 @@ def recommendations_for(
             continue
         recs.append(recommend(s.indicator, s.value, s.status, environment))
     for a in alerts or []:
+        headline, message = alert_text(a)
         recs.append(
             Recommendation(
                 a.indicator,
                 a.status,
-                a.title,
-                [a.message],
+                headline,
+                [message],
                 SURGEON if a.status == RED else CMO,
                 escalate=a.status == RED,
             )
@@ -302,17 +305,17 @@ def autonomy_note(environment: str) -> str | None:
 # ------------------------------------------------------- daily routine --
 DAILY_TASKS = [
     {"id": "morning_vitals", "label": "Morning vitals (HR, BP, SpO₂, temperature)", "hour": 7,
-     "indicators": ["heart_rate", "systolic_bp", "diastolic_bp", "spo2", "body_temp"], "xp": 30},
+     "indicators": ["heart_rate", "systolic_bp", "diastolic_bp", "spo2", "body_temp"]},
     {"id": "fasting_glucose", "label": "Fasting blood glucose", "hour": 7,
-     "indicators": ["blood_glucose"], "xp": 15},
+     "indicators": ["blood_glucose"]},
     {"id": "sleep_log", "label": "Log last night's sleep", "hour": 8,
-     "indicators": ["sleep_hours"], "xp": 10},
+     "indicators": ["sleep_hours"]},
     {"id": "exercise", "label": "Countermeasure exercise", "hour": 17,
-     "indicators": ["exercise_minutes"], "xp": 25},
+     "indicators": ["exercise_minutes"]},
     {"id": "evening_checkin", "label": "Evening mood check-in", "hour": 20,
-     "indicators": ["mood"], "xp": 10},
+     "indicators": ["mood"]},
     {"id": "dosimeter", "label": "Dosimeter read-out", "hour": 21,
-     "indicators": ["radiation_dose"], "xp": 10},
+     "indicators": ["radiation_dose"]},
 ]
 
 
@@ -335,14 +338,20 @@ def task_progress(df: pd.DataFrame, day: date | None = None, now: datetime | Non
     return out
 
 
-# -------------------------------------------------------- gamification --
-LEVELS = [
-    (0, "Cadet"),
-    (200, "Flight Engineer"),
-    (600, "Mission Specialist"),
-    (1200, "Commander"),
-    (2500, "Chief Astronaut"),
-]
+# ------------------------------------------------------- weekly review --
+# A plain, everyday routine tracker instead of points and badges. Each habit has a
+# target taken from an established recommendation, and the review simply reports how
+# many days of the week the target was met — like a health app or a training log.
+#
+#   Measurements  ≥ 80 % of the planned routine done   (80 % is the usual adherence cut-off in
+#                                                       clinical self-monitoring studies)
+#   Sleep         ≥ 7 h, on at least 5 of 7 nights     (AASM/SRS adult recommendation)
+#   Exercise      environment's daily target, ≥ 5/7    (ISS crews train ~6 days a week)
+#   Full check-in all core measurements on ≥ 5/7 days
+REVIEW_DAYS = 7
+ADHERENCE_GOOD, ADHERENCE_FAIR = 0.8, 0.5
+SLEEP_TARGET_H = 7.0
+DAYS_GOAL = 5          # out of 7
 
 
 def streak_days(df: pd.DataFrame, today: date | None = None) -> int:
@@ -361,59 +370,110 @@ def streak_days(df: pd.DataFrame, today: date | None = None) -> int:
     return n
 
 
-def xp_total(df: pd.DataFrame) -> int:
-    """5 XP per reading, task XP for each completed routine task, bonus for complete days."""
+def _window(df: pd.DataFrame, end: date, days: int) -> pd.DataFrame:
+    start = end - timedelta(days=days - 1)
+    d = df[(df["ts"].dt.date >= start) & (df["ts"].dt.date <= end)]
+    return d.assign(date=d["ts"].dt.date)
+
+
+def _adherence(win: pd.DataFrame, end: date, days: int, today: date, now: datetime) -> tuple[int, int]:
+    """(tasks done, tasks planned). Today only counts tasks whose time has come."""
+    done = planned = 0
+    per_day = win.groupby("date")["indicator"].apply(set) if not win.empty else {}
+    for k in range(days):
+        day = end - timedelta(days=k)
+        logged = per_day.get(day, set()) if len(win) else set()
+        for t in DAILY_TASKS:
+            if day == today and now.hour < t["hour"] and not set(t["indicators"]) <= logged:
+                continue  # not due yet
+            planned += 1
+            done += set(t["indicators"]) <= logged
+    return done, planned
+
+
+def _rating(ratio: float, good: float, fair: float) -> str:
+    return GREEN if ratio >= good else YELLOW if ratio >= fair else RED
+
+
+def weekly_review(
+    df: pd.DataFrame,
+    environment: str = DEFAULT_ENVIRONMENT,
+    today: date | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """How the last 7 days went, habit by habit, plus the one thing worth focusing on."""
+    from app.core.thresholds import green_range
+
+    now = now or datetime.now()
+    today = today or now.date()
     df = normalize(df)
-    if df.empty:
-        return 0
-    xp = 5 * len(df)
-    for _, inds in df.groupby(df["ts"].dt.date)["indicator"]:
-        s = set(inds)
-        xp += sum(t["xp"] for t in DAILY_TASKS if set(t["indicators"]) <= s)
-        if set(CORE_INDICATORS) <= s:
-            xp += 25
-    return int(xp)
+    win = _window(df, today, REVIEW_DAYS)
+    prev = _window(df, today - timedelta(days=REVIEW_DAYS), REVIEW_DAYS)
 
+    done, planned = _adherence(win, today, REVIEW_DAYS, today, now)
+    p_done, p_planned = _adherence(prev, today - timedelta(days=REVIEW_DAYS), REVIEW_DAYS, today, now)
+    adherence = done / planned if planned else 0.0
+    prev_adherence = p_done / p_planned if p_planned and not prev.empty else None
 
-def level_for(xp: int) -> dict:
-    current = LEVELS[0]
-    nxt = None
-    for i, (threshold, name) in enumerate(LEVELS):
-        if xp >= threshold:
-            current = (threshold, name)
-            nxt = LEVELS[i + 1] if i + 1 < len(LEVELS) else None
-    progress = 1.0 if nxt is None else (xp - current[0]) / (nxt[0] - current[0])
-    return {
-        "name": current[1],
-        "xp": xp,
-        "next_name": nxt[1] if nxt else None,
-        "next_xp": nxt[0] if nxt else None,
-        "progress": max(0.0, min(1.0, progress)),
-    }
+    def daily(ind: str) -> pd.Series:
+        sub = win[win["indicator"] == ind]
+        return sub.groupby("date")["value"].mean() if not sub.empty else pd.Series(dtype=float)
 
+    sleep = daily("sleep_hours")
+    ex = daily("exercise_minutes")
+    ex_target = green_range("exercise_minutes", environment)[0]
+    sleep_ok = int((sleep >= SLEEP_TARGET_H).sum())
+    ex_ok = int((ex >= ex_target).sum())
+    per_day = win.groupby("date")["indicator"].apply(set) if not win.empty else pd.Series(dtype=object)
+    full_days = int(sum(set(CORE_INDICATORS) <= s for s in per_day))
 
-def badges(df: pd.DataFrame, today: date | None = None) -> list[dict]:
-    df = normalize(df)
-    table = df.assign(date=df["ts"].dt.date) if not df.empty else df
-    streak = streak_days(df, today)
-    days_logged = table["date"].nunique() if not df.empty else 0
-
-    def daily_sum(ind):
-        if df.empty:
-            return pd.Series(dtype=float)
-        sub = table[table["indicator"] == ind]
-        return sub.groupby("date")["value"].mean()
-
-    ex = daily_sum("exercise_minutes")
-    sleep = daily_sum("sleep_hours")
-    return [
-        {"name": "First Contact", "icon": "🛰️", "desc": "Log your first reading", "earned": len(df) > 0},
-        {"name": "Orbit Keeper", "icon": "🔁", "desc": "3-day complete check-in streak", "earned": streak >= 3},
-        {"name": "Week in Space", "icon": "🌗", "desc": "7-day complete check-in streak", "earned": streak >= 7},
-        {"name": "Iron Bones", "icon": "🦴", "desc": "Exercise goal met 5 days", "earned": int((ex >= 90).sum()) >= 5},
-        {"name": "Dream Pilot", "icon": "😴", "desc": "7+ h sleep on 5 days", "earned": int((sleep >= 7).sum()) >= 5},
-        {"name": "Mission Logbook", "icon": "📓", "desc": "Data on 30 different days", "earned": days_logged >= 30},
+    habits = [
+        {"id": "measurements", "label": "Measurements taken", "value": done, "target": planned,
+         "ratio": adherence, "status": _rating(adherence, ADHERENCE_GOOD, ADHERENCE_FAIR),
+         "detail": f"{done} of {planned} planned measurements",
+         "goal": "Aim for at least 80% — that's when the trends become reliable."},
+        {"id": "sleep", "label": "Nights with 7+ hours of sleep", "value": sleep_ok, "target": REVIEW_DAYS,
+         "ratio": sleep_ok / REVIEW_DAYS, "status": _rating(sleep_ok, DAYS_GOAL, 3),
+         "detail": f"{sleep_ok} of {REVIEW_DAYS} nights"
+                   + (f" · average {sleep.mean():.1f} h" if len(sleep) else ""),
+         "goal": "Adults need at least 7 hours. Aim for 5 or more good nights a week."},
+        {"id": "exercise", "label": f"Days with {ex_target:g}+ min of exercise", "value": ex_ok,
+         "target": REVIEW_DAYS, "ratio": ex_ok / REVIEW_DAYS, "status": _rating(ex_ok, DAYS_GOAL, 3),
+         "detail": f"{ex_ok} of {REVIEW_DAYS} days" + (f" · average {ex.mean():.0f} min" if len(ex) else ""),
+         "goal": "Daily exercise is the main protection for bones and muscles. Aim for 5+ days."},
+        {"id": "checkins", "label": "Days with a full check-in", "value": full_days, "target": REVIEW_DAYS,
+         "ratio": full_days / REVIEW_DAYS, "status": _rating(full_days, DAYS_GOAL, 3),
+         "detail": f"{full_days} of {REVIEW_DAYS} days",
+         "goal": "A complete set of numbers on most days makes problems easy to spot early."},
     ]
+    focus = None
+    weakest = min(habits, key=lambda h: (SEVERITY[h["status"]] * -1, h["ratio"]))
+    if weakest["status"] != GREEN:
+        focus = {
+            "measurements": "Your measurements have gaps. Keep the kit where you wake up, so morning vitals "
+                            "take two minutes before anything else.",
+            "sleep": "Sleep is the weak spot this week. Protect a fixed 8-hour sleep window and use the eye "
+                     "mask and earplugs.",
+            "exercise": "Exercise has slipped. Book it at the same time each day, like any other task on "
+                        "the schedule.",
+            "checkins": "Several days are missing a full check-in. The evening mood and dosimeter entries "
+                        "are the ones most often forgotten.",
+        }[weakest["id"]]
+    trend = None
+    if prev_adherence is not None:
+        diff = adherence - prev_adherence
+        trend = "steady" if abs(diff) < 0.05 else ("better" if diff > 0 else "worse")
+    return {
+        "days": REVIEW_DAYS,
+        "start": today - timedelta(days=REVIEW_DAYS - 1),
+        "end": today,
+        "habits": habits,
+        "adherence": adherence,
+        "prev_adherence": prev_adherence,
+        "trend": trend,
+        "focus": focus,
+        "consistency_days": streak_days(df, today),
+    }
 
 
 # --------------------------------------------------------- downlink --
@@ -426,17 +486,17 @@ def downlink_report(
     cumulative_dose_msv: float,
 ) -> str:
     """Compact Markdown summary to send to the flight surgeon at the next comm pass."""
-    from app.core.status import needs_flight_surgeon, overall_status  # local: avoid cycles
+    from app.core.status import needs_flight_surgeon  # local: avoid cycles
 
-    icon = {GREEN: "🟢", YELLOW: "🟡", RED: "🔴", UNKNOWN: "⚪"}
-    overall = overall_status(statuses, alerts)
+    icon = {GREEN: "[ok]", YELLOW: "[~]", RED: "[!]", UNKNOWN: "[ ]"}
+    o = companion_overall(statuses, alerts)
     escalate, reasons = needs_flight_surgeon(statuses, alerts)
     lines = [
         f"# Caretta health downlink — {astronaut_id}",
         f"Generated {datetime.now():%Y-%m-%d %H:%M} · environment: {environment}",
         "",
-        f"**Overall: {icon[overall]} {STATUS_LABELS[overall]}**"
-        + ("  — **flight surgeon review requested**" if escalate else ""),
+        f"**Overall: {icon[o.status]} {o.label}**"
+        + ("  — **care team looped in**" if escalate else ""),
         "",
         "| Indicator | Latest | Status | Time |",
         "|---|---|---|---|",
@@ -444,7 +504,7 @@ def downlink_report(
     for s in statuses.values():
         ind = INDICATORS[s.indicator]
         ts = s.ts[:16].replace("T", " ") if s.ts else "—"
-        lines.append(f"| {ind.name} | {ind.format(s.value)} | {icon[s.status]} {STATUS_LABELS[s.status]} | {ts} |")
+        lines.append(f"| {ind.name} | {ind.format(s.value)} | {icon[s.status]} {status_label(s.status, s.indicator)} | {ts} |")
     lines += ["", f"Cumulative mission dose: **{cumulative_dose_msv:.1f} mSv**", ""]
     if reasons:
         lines += ["## Escalation reasons", *[f"- {r}" for r in reasons], ""]

@@ -17,6 +17,7 @@ self-assessment and is grounded in NASA's Human Research Program (HRP) five haza
 | Clear presentation & diagnosis | **Traffic-light status** (colour + shape + words, colour-blind safe) per indicator, per body system and overall. |
 | Interactive human figure | **Animated particle body map**: ~6–14k particles form a realistic human figure; click a body system and they scatter and re-assemble into the brain, heart, lungs, abdominal organs, lymphatic system, skeleton or a radiation view. Each system shows its function, spaceflight effects, hazards, latest values, guidance and a trend chart. |
 | Dynamic charts over time | Indicator charts with green/yellow/red bands and 7-day averages, a **mission calendar heatmap**, radiation dose (daily + cumulative vs. 600 mSv career limit). |
+| Diagnosis | Step-by-step **triage**: one question at a time (emergency screen → main complaint → 1–4 follow-ups) leading to one of 44 spaceflight-aware outcomes (motion sickness, CO₂ build-up, SANS, decompression sickness, kidney stone, viral reactivation…), with urgency, actions and who to involve. The result is cross-checked against the latest readings, which can raise the urgency. Saved assessments show up for the flight surgeon. |
 | Guidance on treatments & improvements | Specific actions for every indicator × direction × severity and **who acts** (self, crew medical officer, flight surgeon). |
 | When to involve crew / flight surgeon | Escalation rules + trend engine (persistence, sleep debt, heart-rate drift, low mood, cumulative dose) and a one-click **downlink report**. |
 | Prompt measurements as a routine | **Daily routine** with due/upcoming tasks. |
@@ -32,6 +33,12 @@ Thresholds and sources: [`data/thresholds_sources.md`](data/thresholds_sources.m
 Hazard → body system → indicator mapping: [`docs/hazards_to_systems.md`](docs/hazards_to_systems.md).
 
 ## Quick start
+
+**Windows:** double-click `start.bat`. The first run sets up Python packages (a minute or two), then your
+browser opens Caretta at http://localhost:8501. Keep the black window open while you use it.
+**macOS / Linux:** run `./start.sh`.
+
+### Manual start
 
 ```bash
 git clone <this-repo> caretta && cd caretta
@@ -77,6 +84,8 @@ gradual sleep erosion. The walkthrough is in [`docs/demo-script.md`](docs/demo-s
 | GET | `/status/{astronaut_id}?environment=iss` | Full assessment: overall, per indicator, per body region, trend alerts, recommendations, escalation |
 | GET | `/recommendations/{astronaut_id}` | Prioritised guidance |
 | GET | `/report/{astronaut_id}` | Markdown downlink report for the flight surgeon |
+| POST | `/diagnosis` | Triage step: send the answers so far, get the next question or the final assessment |
+| GET | `/diagnosis/{astronaut_id}` | Saved assessments |
 | POST | `/simulate` | Generate a synthetic mission for an astronaut |
 
 ```bash

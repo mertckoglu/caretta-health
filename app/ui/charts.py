@@ -10,17 +10,29 @@ import plotly.graph_objects as go
 
 from app.core.indicators import INDICATORS
 from app.core.status import daily_table
-from app.core.thresholds import GREEN, RED, STATUS_LABELS, UNKNOWN, YELLOW, classify, get_thresholds
+from app.core.thresholds import (
+    GREEN,
+    NEEDS_CARE,
+    RED,
+    STATUS_HINTS,
+    STATUS_LABELS,
+    UNKNOWN,
+    YELLOW,
+    classify,
+    get_thresholds,
+    status_label,
+)
 
-STATUS_COLORS = {GREEN: "#2E9D5B", YELLOW: "#E0A800", RED: "#D64545", UNKNOWN: "#9AA0A6"}
+# Status colours: readable on deep navy and kept apart from the amber brand accent (#F5B041)
+STATUS_COLORS = {GREEN: "#4FD1A5", YELLOW: "#EAD94C", RED: "#FF7A7A", UNKNOWN: "#9AA3C7"}
+ACCENT = "#F5B041"
 STATUS_ICONS = {GREEN: "●", YELLOW: "▲", RED: "■", UNKNOWN: "○"}
-STATUS_EMOJI = {GREEN: "🟢", YELLOW: "🟡", RED: "🔴", UNKNOWN: "⚪"}
-BAND_FILL = {GREEN: "rgba(46,157,91,0.10)", YELLOW: "rgba(224,168,0,0.12)", RED: "rgba(214,69,69,0.08)"}
+BAND_FILL = {GREEN: "rgba(79,209,165,0.12)", YELLOW: "rgba(234,217,76,0.11)", RED: "rgba(255,122,122,0.10)"}
 
 
-def status_chip(status: str, text: str | None = None) -> str:
+def status_chip(status: str, text: str | None = None, indicator: str | None = None) -> str:
     color = STATUS_COLORS[status]
-    label = text or STATUS_LABELS[status]
+    label = text or status_label(status, indicator)
     return (
         f"<span style='display:inline-block;padding:2px 10px;border-radius:999px;"
         f"background:{color}22;border:1px solid {color};color:{color};font-weight:600;"
@@ -28,16 +40,47 @@ def status_chip(status: str, text: str | None = None) -> str:
     )
 
 
-def status_card(title: str, value: str, status: str, subtitle: str = "") -> str:
+def count_up(text: str) -> str:
+    """Animate the leading whole number of ``text`` from 0 (CSS only, 0.6 s); the rest stays static.
+
+    "36.6 °C" -> count 0→36, then ".6 °C". Screen readers get the plain text.
+    """
+    import re
+
+    m = re.match(r"^(\d+)(.*)$", text or "")
+    if not m:
+        return text
+    whole, rest = m.groups()
+    return (f'<span aria-hidden="true"><span class="ct-count" style="--n:{int(whole)}"></span>{rest}</span>'
+            f'<span class="sr-only">{text}</span>')
+
+
+def status_card(title: str, value: str, status: str, subtitle: str = "", indicator: str | None = None) -> str:
+    from app.ui.icons import INDICATOR_ICONS, icon
+
     color = STATUS_COLORS[status]
+    num, _, unit = value.partition(" ")
+    shown = count_up(num) + (f"<small>{unit}</small>" if unit else "")
+    ico = icon(INDICATOR_ICONS.get(indicator, "circle"), 16)
     return f"""
-    <div style="border-left:6px solid {color};border-radius:10px;padding:10px 14px;
-                background:rgba(127,127,127,0.07);margin-bottom:8px;min-height:118px">
-      <div style="font-size:0.8rem;opacity:0.75">{title}</div>
-      <div style="font-size:1.45rem;font-weight:700;margin:2px 0">{value}</div>
-      <div>{status_chip(status)}</div>
-      <div style="font-size:0.72rem;opacity:0.65;margin-top:4px">{subtitle}</div>
+    <div class="ct-card" style="--accent:{color}; box-shadow: inset 3px 0 0 {color};">
+      <div class="ct-card__top">{ico}<span>{title}</span></div>
+      <div class="ct-card__value">{shown}</div>
+      <div>{status_chip(status, indicator=indicator)}</div>
+      <div class="ct-card__when">{subtitle}</div>
     </div>"""
+
+
+def status_legend() -> str:
+    """Every label with the one line that explains it."""
+    rows = [(GREEN, STATUS_LABELS[GREEN], STATUS_HINTS[GREEN]),
+            (YELLOW, STATUS_LABELS[YELLOW], STATUS_HINTS[YELLOW]),
+            (RED, NEEDS_CARE, STATUS_HINTS[NEEDS_CARE]),
+            (RED, STATUS_LABELS[RED], STATUS_HINTS[RED]),
+            (UNKNOWN, STATUS_LABELS[UNKNOWN], STATUS_HINTS[UNKNOWN])]
+    items = "".join(f"<div class='ct-legend__item'>{status_chip(s, text=label)}<span>{hint}</span></div>"
+                    for s, label, hint in rows)
+    return f"<div class='ct-legend'>{items}</div>"
 
 
 def _layout(fig: go.Figure, height: int = 300, **kw) -> go.Figure:
@@ -83,8 +126,8 @@ def indicator_chart(df: pd.DataFrame, indicator: str, environment: str, height: 
                 x=series.index,
                 y=series.values,
                 mode="lines+markers",
-                line=dict(color="#4C6EF5", width=2),
-                marker=dict(size=9, color=colors, line=dict(width=1, color="white")),
+                line=dict(color=ACCENT, width=2),
+                marker=dict(size=9, color=colors, line=dict(width=1, color="#0B0F2A")),
                 name=ind.name,
                 hovertemplate=f"%{{y:.{ind.decimals}f}} {ind.unit}<extra></extra>",
             )
@@ -110,7 +153,7 @@ def status_heatmap(status_table: pd.DataFrame, height: int = 380) -> go.Figure:
     code = {UNKNOWN: 0, GREEN: 1, YELLOW: 2, RED: 3}
     names = [INDICATORS[c].name for c in status_table.columns]
     z = status_table.apply(lambda c: c.map(code)).T.values
-    text = status_table.apply(lambda c: c.map(STATUS_LABELS)).T.values
+    text = status_table.apply(lambda c: c.map(lambda s: status_label(s, c.name))).T.values
     x = [d.strftime("%b %d") for d in pd.to_datetime(status_table.index)]
     colorscale = [
         [0.0, STATUS_COLORS[UNKNOWN]], [0.25, STATUS_COLORS[UNKNOWN]],
@@ -134,10 +177,10 @@ def dose_chart(df: pd.DataFrame, height: int = 260) -> go.Figure:
     table = daily_table(df)
     s = table["radiation_dose"].dropna() if "radiation_dose" in table else pd.Series(dtype=float)
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=s.index, y=s.values, marker_color="#7C5CFF", name="Daily dose",
+    fig.add_trace(go.Bar(x=s.index, y=s.values, marker_color="#8EA2FF", name="Daily dose",
                          hovertemplate="%{y:.2f} mSv<extra>daily</extra>"))
     fig.add_trace(go.Scatter(x=s.index, y=s.cumsum().values, yaxis="y2", mode="lines",
-                             line=dict(color="#D64545", width=2), name="Cumulative",
+                             line=dict(color=ACCENT, width=2), name="Cumulative",
                              hovertemplate="%{y:.1f} mSv<extra>cumulative</extra>"))
     fig.update_layout(yaxis=dict(title="mSv / day"),
                       yaxis2=dict(title="cumulative mSv", overlaying="y", side="right", showgrid=False))
@@ -152,7 +195,7 @@ def overall_gauge(score: float, height: int = 210) -> go.Figure:
             mode="gauge+number",
             value=round(score),
             number=dict(suffix="%"),
-            title=dict(text="Indicators in green", font=dict(size=13)),
+            title=dict(text="In the normal range", font=dict(size=13)),
             gauge=dict(
                 axis=dict(range=[0, 100]),
                 bar=dict(color=STATUS_COLORS[status]),

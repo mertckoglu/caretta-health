@@ -144,3 +144,33 @@ def test_photo_validation(tmp_path):
             db.insert_photo(conn, "CDR", args["data"], args["mime"], category=args["category"])
     assert db.fetch_photos(conn).empty
     assert list((tmp_path / "photos").glob("*")) == [] if (tmp_path / "photos").exists() else True
+
+
+def test_diagnosis_flow_via_api(client):
+    client.post("/readings", json={"astronaut_id": "CDR", "indicator": "spo2", "value": 88})
+    step = client.post("/diagnosis", json={"astronaut_id": "CDR", "answers": []}).json()
+    assert not step["done"] and step["question_id"] == "start" and "None of these" in step["options"]
+    step = client.post("/diagnosis", json={"astronaut_id": "CDR", "answers": [4]}).json()
+    assert step["question_id"] == "complaint"
+    # breathing -> no shared alarm -> after dusty EVA => dust irritation, red SpO2 escalates to emergency
+    done = client.post("/diagnosis", json={"astronaut_id": "CDR", "answers": [4, 2, 1, 0]}).json()
+    assert done["done"] and done["assessment"]["outcome_id"] == "o_dust"
+    assert done["assessment"]["urgency"] == "emergency"
+    hist = client.get("/diagnosis/CDR").json()
+    assert len(hist) == 1 and hist[0]["title"] == done["assessment"]["title"]
+    assert client.post("/diagnosis", json={"astronaut_id": "CDR", "answers": [42]}).status_code == 422
+
+
+def test_timestamps_with_microseconds_do_not_break_reads(tmp_path):
+    from datetime import datetime
+
+    from app.api import db
+
+    conn = db.connect(tmp_path / "t.db")
+    db.insert_reading(conn, "CDR", "spo2", 97, datetime(2026, 3, 1, 8, 0, 0))
+    db.insert_reading(conn, "CDR", "spo2", 96, datetime(2026, 3, 1, 9, 30, 15, 679808))
+    # an older row written with microseconds before the fix
+    conn.execute("INSERT INTO readings (astronaut_id, ts, indicator, value) VALUES ('CDR','2026-03-01T10:00:00.123456','spo2',95)")
+    conn.commit()
+    df = db.fetch_readings(conn, "CDR")
+    assert len(df) == 3 and str(df["ts"].iloc[1]) == "2026-03-01 09:30:15"
