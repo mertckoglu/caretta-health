@@ -9,7 +9,20 @@ self-assessment and is grounded in NASA's Human Research Program (HRP) five haza
 
 ![status](https://img.shields.io/badge/tests-59%20passing-2E9D5B) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
-## Features
+## Contents
+
+- [1. Features](#1-features)
+  - [1.1 Indicators](#11-indicators)
+- [2. Quick start](#2-quick-start)
+  - [2.1 Manual start](#21-manual-start)
+  - [2.2 Demo data](#22-demo-data)
+- [3. API](#3-api)
+- [4. Project structure](#4-project-structure)
+- [5. Design notes](#5-design-notes)
+- [6. Disclaimer](#6-disclaimer)
+- [7. License](#7-license)
+
+## 1. Features
 
 | Challenge objective | How Caretta does it |
 |---|---|
@@ -25,20 +38,20 @@ self-assessment and is grounded in NASA's Human Research Program (HRP) five haza
 | Different environments | Space station, deep-space transit, lunar base, Mars base, rover. **Each environment is its own mission dataset**, simulated automatically the first time it is opened with environment-specific physiology and events (no-magnetosphere SPE in transit, lunar dust & lunar night, Mars comm delay & dust storm, rover EVAs & cabin CO₂). Radiation/exercise limits and communication-delay guidance adapt too. |
 | Don't assume medical knowledge | "How to measure" and "Why it matters" cards for every indicator, including microgravity tips. |
 
-### Indicators
+### 1.1 Indicators
 
 Resting heart rate · systolic/diastolic blood pressure · SpO₂ · body temperature · fasting blood glucose ·
 sleep hours · mood (1–5) · countermeasure exercise minutes · radiation dose (24 h).
 Thresholds and sources: [`data/thresholds_sources.md`](data/thresholds_sources.md).
 Hazard → body system → indicator mapping: [`docs/hazards_to_systems.md`](docs/hazards_to_systems.md).
 
-## Quick start
+## 2. Quick start
 
 **Windows:** double-click `start.bat`. The first run sets up Python packages (a minute or two), then your
 browser opens Caretta at http://localhost:8501. Keep the black window open while you use it.
 **macOS / Linux:** run `./start.sh`.
 
-### Manual start
+### 2.1 Manual start
 
 ```bash
 git clone <this-repo> caretta && cd caretta
@@ -58,7 +71,7 @@ pytest -q
 Data is stored in SQLite at `data/caretta.db` (override with the `CARETTA_DB` environment variable).
 Both the UI and the API use the same database.
 
-### Demo data
+### 2.2 Demo data
 
 ```bash
 python scripts/seed_demo_data.py --db --reset                                   # 4-person crew, ends today
@@ -70,7 +83,7 @@ python scripts/seed_demo_data.py --from-csv data/sample_mission_30d.csv --db --r
 particle event (day 12), a broken treadmill (days 16–18), a fever (days 22–23), a mid-mission mood dip and
 gradual sleep erosion. The walkthrough is in [`docs/demo-script.md`](docs/demo-script.md).
 
-## API
+## 3. API
 
 | Method | Path | Description |
 |---|---|---|
@@ -94,7 +107,7 @@ curl -X POST localhost:8000/readings -H 'Content-Type: application/json' \
 # → {"id":1, ..., "status":"red"}
 ```
 
-## Project structure
+## 4. Project structure
 
 ```
 app/
@@ -116,19 +129,19 @@ scripts/           demo data generator / loader
 tests/             pytest suite (core, simulation, API)
 ```
 
-## Design notes
+## 5. Design notes
 
 * **Offline first** — a single SQLite file, no cloud dependency: crews beyond LEO can't rely on a link to Earth.
 * **Trends over single readings** — persistent deviations matter more than one bad number.
 * **Accessible status** — every colour is paired with a shape (● ▲ ■) and a word; the body map has a keyboard-friendly list alternative.
 * **Separation of concerns** — all medical logic is in `app/core`, shared by the UI and the API and covered by tests.
 
-## Disclaimer
+## 6. Disclaimer
 
 Caretta is a hackathon prototype for education and decision support. It is **not a medical device** and does
 not diagnose. Thresholds are simplified screening limits. Always follow mission medical procedures and the
 instructions of your flight surgeon.
 
-## License
+## 7. License
 
 [MIT](LICENSE)
