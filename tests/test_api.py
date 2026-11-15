@@ -174,3 +174,65 @@ def test_timestamps_with_microseconds_do_not_break_reads(tmp_path):
     conn.commit()
     df = db.fetch_readings(conn, "CDR")
     assert len(df) == 3 and str(df["ts"].iloc[1]) == "2026-03-01 09:30:15"
+
+
+def test_daily_report_replaces_same_day_values(tmp_path):
+    from datetime import date, timedelta
+
+    from app.api import db
+
+    conn = db.connect(tmp_path / "d.db")
+    today = date.today()
+    db.save_daily_report(conn, "CDR", today, {"heart_rate": 70, "spo2": 98}, "iss")
+    db.save_daily_report(conn, "CDR", today, {"heart_rate": 100}, "iss")       # same day → replaces HR only
+    db.save_daily_report(conn, "CDR", today - timedelta(days=1), {"heart_rate": 65}, "iss")
+    df = db.fetch_readings(conn, "CDR", environment="iss")
+    todays = df[df["ts"].dt.date == today].set_index("indicator")["value"].to_dict()
+    assert todays == {"heart_rate": 100, "spo2": 98}
+    assert len(df) == 3 and set(df["source"]) == {"manual"}
+
+
+def test_new_practice_mission_is_a_full_reset(tmp_path):
+    from datetime import date, timedelta
+
+    from app.api import db
+    from app.ui import seed_demo
+
+    conn = db.connect(tmp_path / "s.db")
+    seed_demo(conn, "iss")
+    seed_demo(conn, "transit")
+    db.save_daily_report(conn, "CDR", date.today(), {"heart_rate": 111}, "iss")
+    db.save_daily_report(conn, "CDR", date.today() - timedelta(days=1), {"heart_rate": 112}, "iss")
+    seed_demo(conn, "iss")                                    # the button: wipes check-ins as well
+    iss = db.fetch_readings(conn, environment="iss")
+    assert set(iss["source"]) == {"sim"} and (iss["ts"].dt.date < date.today()).all()
+    assert db.count_readings(conn, "iss") == db.count_readings(conn, "transit") == 1200   # other location untouched
+
+
+def test_old_databases_get_a_source_column(tmp_path):
+    import sqlite3
+
+    from app.api import db
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE readings (id INTEGER PRIMARY KEY AUTOINCREMENT, astronaut_id TEXT NOT NULL, ts TEXT NOT NULL,"
+                " indicator TEXT NOT NULL, value REAL NOT NULL, environment TEXT NOT NULL DEFAULT 'iss', note TEXT)")
+    old.executemany("INSERT INTO readings (astronaut_id, ts, indicator, value) VALUES ('CDR', ?, 'heart_rate', 70)",
+                    [("2026-11-15T07:12:00",), ("2026-11-15T20:31:00",), ("2026-11-15T15:48:00",)])
+    old.commit()
+    old.close()
+    df = db.fetch_readings(db.connect(path))
+    assert df["source"].tolist() == ["sim", "manual", "sim"]
+
+
+def test_regenerating_draws_new_random_values(tmp_path):
+    from app.api import db
+    from app.ui import seed_demo
+
+    conn = db.connect(tmp_path / "r.db")
+    seed_demo(conn, "iss")
+    first = db.fetch_readings(conn, "CDR", environment="iss")["value"].tolist()
+    seed_demo(conn, "iss")
+    second = db.fetch_readings(conn, "CDR", environment="iss")["value"].tolist()
+    assert len(first) == len(second) and first != second

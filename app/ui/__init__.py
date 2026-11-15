@@ -220,13 +220,21 @@ def _conn():
     return _cached()
 
 
-def seed_demo(conn, environment: str = "iss") -> int:
-    """(Re)generate the simulated 30-day crew mission for ONE environment. Other environments are untouched."""
+def seed_demo(conn, environment: str = "iss", seed: int | None = None) -> int:
+    """Full reset of ONE environment: delete every reading there (practice data AND check-ins)
+    and generate a fresh random 30-day crew mission. Each call draws new values unless ``seed``
+    is given. Other environments are untouched. Runs only on the user's click, or automatically
+    when an environment has no data at all.
+    """
+    import random
+
     from app.api import db
     from app.core.simulate import simulate_crew
 
     db.delete_environment(conn, environment)
-    return db.insert_dataframe(conn, simulate_crew(days=30, environment=environment))
+    sim = simulate_crew(days=30, environment=environment,
+                        seed=seed if seed is not None else random.randrange(1_000_000))
+    return db.insert_dataframe(conn, sim, source="sim")
 
 
 def ensure_environment_data(conn, environment: str) -> bool:
@@ -309,7 +317,8 @@ def page_context() -> PageContext:
         with st.expander("About this mission's data"):
             st.caption(ENV_PROFILES.get(environment, {}).get("story", ""))
             st.caption("Each location keeps its own records. Anything you log is saved under the location "
-                       "selected above.")
+                       "selected above. Generating a new mission is a full reset of this location: every reading, "
+                       "your own check-ins included, is replaced by a new random mission.")
             if st.button("Generate a new practice mission", type="secondary", width="stretch"):
                 seed_demo(conn, environment)
                 st.rerun()
@@ -319,6 +328,9 @@ def page_context() -> PageContext:
 
     render_header(astronaut, ENVIRONMENTS[environment]["label"])
     df = db.fetch_readings(conn, astronaut, environment=environment)
+    if not df.empty:
+        # a reading stamped later than now (e.g. older simulated data) must never mask a real check-in
+        df = df[df["ts"] <= pd.Timestamp.now()].reset_index(drop=True)
     statuses = evaluate_latest(df, environment)
     alerts = detect_trends(df, environment)
     recs = recommendations_for(statuses, alerts, environment)

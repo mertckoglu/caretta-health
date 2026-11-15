@@ -1,6 +1,6 @@
 """Guided check-in: type the values you measured, see the status instantly, attach photos, earn XP."""
 import sys
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -123,17 +123,17 @@ if photos:
 note = st.text_area("Anything else? (optional)", placeholder="How are you feeling? e.g. headache since lunch",
                     key=wkey("note"))
 
-c1, c2 = st.columns(2)
-day = c1.date_input("Date", value=datetime.now().date(), key=wkey("date"))
-tm = c2.time_input("Time", value=datetime.now().time().replace(second=0, microsecond=0), key=wkey("time"))
+day = st.date_input("Day", value=date.today(), max_value=date.today(), key=wkey("date"))
+st.caption("One report per day. Saving again for the same day replaces the earlier values for whatever you "
+           "fill in now; anything you leave blank keeps its earlier value.")
 
 
-def _save(entries: dict[str, float], photos: list, ts: datetime, note: str, category: str, caption: str) -> None:
+def _save(entries: dict[str, float], photos: list, day: date, note: str, category: str, caption: str) -> None:
     """Runs as a button callback, i.e. before the next script run — so the form can be reset cleanly."""
     errors = []
     note_text = note.strip() or None
-    for key, value in entries.items():
-        db.insert_reading(ctx.conn, ctx.astronaut, key, value, ts, ctx.environment, note_text)
+    db.save_daily_report(ctx.conn, ctx.astronaut, day, entries, ctx.environment, note_text)
+    ts = datetime.combine(day, datetime.now().time()) if day == date.today() else datetime.combine(day, time(12))
     saved_photos = 0
     for ph in photos:
         try:
@@ -167,7 +167,7 @@ st.button(
     disabled=not label,
     width="stretch",
     on_click=_save,
-    args=(entries, photos, datetime.combine(day, tm), note, category, caption),
+    args=(entries, photos, day, note, category, caption),
 )
 if not label:
     st.caption("Enter at least one number or add a photo, then save.")

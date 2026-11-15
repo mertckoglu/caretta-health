@@ -9,7 +9,7 @@ import json
 import os
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS readings (
     indicator     TEXT    NOT NULL,
     value         REAL    NOT NULL,
     environment   TEXT    NOT NULL DEFAULT 'iss',
-    note          TEXT
+    note          TEXT,
+    source        TEXT    NOT NULL DEFAULT 'manual'   -- 'manual' (check-in / API) or 'sim' (practice data)
 );
 CREATE INDEX IF NOT EXISTS idx_readings_astro_ts ON readings (astronaut_id, ts);
 CREATE TABLE IF NOT EXISTS photos (
@@ -67,7 +68,27 @@ PHOTO_CATEGORIES = {
 _EXT = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 
-COLUMNS = ["id", "astronaut_id", "ts", "indicator", "value", "environment", "note"]
+COLUMNS = ["id", "astronaut_id", "ts", "indicator", "value", "environment", "note", "source"]
+SOURCES = ("manual", "sim")
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add the ``source`` column to databases created before it existed.
+
+    Old rows are classified once by the simulator's fixed time windows (07:00–07:29 morning
+    measurements, 17:00–17:49 exercise, 20:00–20:49 evening); everything else counts as a
+    real check-in, so "Generate a new practice mission" never deletes it.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(readings)")}
+    if "source" in cols:
+        return
+    conn.execute("ALTER TABLE readings ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+    conn.execute(
+        """UPDATE readings SET source = 'sim' WHERE note IS NULL AND (
+               (substr(ts, 12, 2) = '07' AND CAST(substr(ts, 15, 2) AS INTEGER) < 30) OR
+               (substr(ts, 12, 2) IN ('17', '20') AND CAST(substr(ts, 15, 2) AS INTEGER) < 50))"""
+    )
+    conn.commit()
 
 
 def db_path() -> Path:
@@ -89,6 +110,7 @@ def connect(path: str | Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
 
 
@@ -121,8 +143,44 @@ def insert_reading(
     return int(cur.lastrowid)
 
 
-def insert_dataframe(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+def save_daily_report(
+    conn: sqlite3.Connection,
+    astronaut_id: str,
+    day: date,
+    values: dict[str, float],
+    environment: str = DEFAULT_ENVIRONMENT,
+    note: str | None = None,
+) -> int:
+    """One report per astronaut per day: each value replaces whatever that day already had for the
+    same indicator (earlier check-ins or practice data), so readings never pile up on one day.
+    Stored at midnight of ``day`` — the report is about the day, not the hour."""
+    for indicator, value in values.items():
+        validate_value(indicator, float(value))
+    if environment not in ENVIRONMENTS:
+        raise ValueError(f"Unknown environment: {environment!r}")
+    astronaut_id = (astronaut_id or "").strip()
+    if not astronaut_id:
+        raise ValueError("astronaut_id must not be empty")
+    ts = datetime.combine(day, time()).isoformat(timespec="seconds")
+    lo, hi = day.isoformat(), (day + timedelta(days=1)).isoformat()
+    with conn:
+        for indicator, value in values.items():
+            conn.execute(
+                "DELETE FROM readings WHERE astronaut_id = ? AND environment = ? AND indicator = ? AND ts >= ? AND ts < ?",
+                (astronaut_id, environment, indicator, lo, hi),
+            )
+            conn.execute(
+                "INSERT INTO readings (astronaut_id, ts, indicator, value, environment, note, source) "
+                "VALUES (?,?,?,?,?,?,'manual')",
+                (astronaut_id, ts, indicator, float(value), environment, note),
+            )
+    return len(values)
+
+
+def insert_dataframe(conn: sqlite3.Connection, df: pd.DataFrame, source: str = "manual") -> int:
     """Bulk insert a long DataFrame (ts, astronaut_id, indicator, value[, environment, note])."""
+    if source not in SOURCES:
+        raise ValueError(f"Unknown source: {source!r}")
     rows = []
     for r in df.to_dict("records"):
         validate_value(r["indicator"], float(r["value"]))
@@ -134,10 +192,11 @@ def insert_dataframe(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
                 float(r["value"]),
                 r.get("environment") or DEFAULT_ENVIRONMENT,
                 r.get("note") if isinstance(r.get("note"), str) else None,
+                source,
             )
         )
     conn.executemany(
-        "INSERT INTO readings (astronaut_id, ts, indicator, value, environment, note) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO readings (astronaut_id, ts, indicator, value, environment, note, source) VALUES (?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()
@@ -189,7 +248,12 @@ def count_readings(conn: sqlite3.Connection, environment: str | None = None) -> 
     return conn.execute("SELECT COUNT(*) FROM readings").fetchone()[0]
 
 
-def delete_environment(conn: sqlite3.Connection, environment: str) -> int:
+def delete_environment(conn: sqlite3.Connection, environment: str, source: str | None = None) -> int:
+    """Delete an environment's readings; with ``source`` only that kind (e.g. 'sim' keeps real check-ins)."""
+    if source:
+        cur = conn.execute("DELETE FROM readings WHERE environment = ? AND source = ?", (environment, source))
+        conn.commit()
+        return cur.rowcount
     cur = conn.execute("DELETE FROM readings WHERE environment = ?", (environment,))
     conn.commit()
     return cur.rowcount

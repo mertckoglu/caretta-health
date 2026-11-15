@@ -55,7 +55,7 @@ for member in db.list_astronauts(ctx.conn, ctx.environment):
             "Overall": companion.overall(statuses, alerts).label,
             "Care team": "Looped in" if esc else "—",
             "Reasons": "; ".join(reasons) or "—",
-            "Last reading": df["ts"].max().strftime("%Y-%m-%d %H:%M") if not df.empty else "—",
+            "Last reading": df["ts"].max().strftime("%Y-%m-%d") if not df.empty else "—",
             "Mission dose (mSv)": round(cumulative_dose(df), 1),
         }
     )
@@ -94,7 +94,7 @@ with tab_notes:
     if notes.empty:
         st.caption("No notes yet.")
     for r in notes.sort_values("ts", ascending=False).itertuples():
-        st.markdown(f"**{r.ts:%Y-%m-%d %H:%M}** — {r.note}")
+        st.markdown(f"**{r.ts:%Y-%m-%d}** — {r.note}")
 with tab_photos:
     pics = db.fetch_photos(ctx.conn, ctx.astronaut, ctx.environment)
     if pics.empty:

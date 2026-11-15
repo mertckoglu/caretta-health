@@ -30,7 +30,7 @@ _keys = list(INDICATORS)
 for _row in range(0, len(_keys), 5):
     for _col, _key in zip(st.columns(5), _keys[_row:_row + 5]):
         _s = ctx.statuses[_key]
-        _when = pd.Timestamp(_s.ts).strftime("%d %b, %H:%M") if _s.ts else "not measured yet"
+        _when = pd.Timestamp(_s.ts).strftime("%d %b") if _s.ts else "not measured yet"
         _col.markdown(status_card(INDICATORS[_key].name, INDICATORS[_key].format(_s.value), _s.status, _when,
                                   indicator=_key), unsafe_allow_html=True)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -69,7 +69,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         return environment
 
     def _build_report(conn, astronaut_id: str, environment: str, days: int):
-        since = datetime.now() - timedelta(days=days)
+        since = datetime.combine(date.today() - timedelta(days=days), time())
         df = db.fetch_readings(conn, astronaut_id, since=since, environment=environment)
         if df.empty:
             raise HTTPException(
@@ -143,7 +143,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         days: int = Query(30, ge=1, le=3650),
         conn=Depends(get_conn),
     ) -> list[ReadingOut]:
-        df = db.fetch_readings(conn, astronaut_id, datetime.now() - timedelta(days=days), indicator, environment)
+        df = db.fetch_readings(conn, astronaut_id, datetime.combine(date.today() - timedelta(days=days), time()), indicator, environment)
         return [
             ReadingOut(
                 **{**r, "note": r["note"] if isinstance(r["note"], str) else None},
@@ -224,7 +224,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         if req.replace:
             db.delete_astronaut(conn, req.astronaut_id, req.environment)
         df = simulate_mission(req.days, req.astronaut_id, req.environment, req.seed)
-        return SimulateResult(astronaut_id=req.astronaut_id, inserted=db.insert_dataframe(conn, df))
+        return SimulateResult(astronaut_id=req.astronaut_id, inserted=db.insert_dataframe(conn, df, source="sim"))
 
     return app
 
