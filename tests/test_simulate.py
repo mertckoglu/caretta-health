@@ -96,3 +96,18 @@ def test_practice_data_is_daily_and_leaves_today_free():
     assert (df["ts"].dt.date < date.today()).all()
     assert (df["ts"].dt.time == datetime.min.time()).all()
     assert not df.duplicated(["ts", "indicator"]).any()
+
+
+def test_practice_mission_has_a_red_on_the_last_day():
+    from app.core.thresholds import ENVIRONMENTS
+
+    for env in ENVIRONMENTS:
+        for seed in range(40):
+            df = simulate_crew(days=30, environment=env, seed=seed, red_last_day=True)
+            last = df[df["ts"] == df["ts"].max()]
+            for member, rows in last.groupby("astronaut_id"):
+                statuses = [classify(r.indicator, r.value, env) for r in rows.itertuples()]
+                assert RED in statuses, (env, seed, member)
+                for r in rows.itertuples():            # still physically valid values
+                    ind = INDICATORS[r.indicator]
+                    assert ind.min_valid <= r.value <= ind.max_valid
