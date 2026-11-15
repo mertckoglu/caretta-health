@@ -232,7 +232,7 @@ def seed_demo(conn, environment: str = "iss", seed: int | None = None) -> int:
     from app.core.simulate import simulate_crew
 
     db.delete_environment(conn, environment)
-    sim = simulate_crew(days=30, environment=environment,
+    sim = simulate_crew(days=30, environment=environment, red_last_day=True,
                         seed=seed if seed is not None else random.randrange(1_000_000))
     return db.insert_dataframe(conn, sim, source="sim")
 

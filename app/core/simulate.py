@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from app.core.indicators import INDICATORS
-from app.core.thresholds import DEFAULT_ENVIRONMENT, ENVIRONMENTS
+from app.core.thresholds import DEFAULT_ENVIRONMENT, ENVIRONMENTS, RED, classify, get_thresholds
 
 MORNING = {"heart_rate", "systolic_bp", "diastolic_bp", "spo2", "body_temp", "blood_glucose", "sleep_hours"}
 
@@ -166,14 +166,52 @@ def simulate_mission(
     return pd.DataFrame(rows)
 
 
+def _red_value(indicator: str, environment: str, rng: np.random.Generator) -> float | None:
+    """A plausible out-of-range value just beyond the yellow band (above it if it has a ceiling, else below)."""
+    ind = INDICATORS[indicator]
+    bands = [b for kind in ("green", "yellow") for b in get_thresholds(indicator, environment)[kind]]
+    hi = max(b[1] for b in bands)
+    lo = min(b[0] for b in bands)
+    if hi != float("inf"):
+        v = hi * rng.uniform(1.05, 1.2)
+    elif lo > 0:
+        v = lo * rng.uniform(0.6, 0.9)
+    else:
+        return None
+    v = round(min(max(v, ind.min_valid), ind.max_valid), ind.decimals)
+    if classify(indicator, v, environment) != RED:      # rounding pulled it back into range
+        v = float(np.floor(lo - 1) if hi == float("inf") else np.ceil(hi + 1))
+    return v if ind.min_valid <= v <= ind.max_valid and classify(indicator, v, environment) == RED else None
+
+
+def ensure_red_on_last_day(df: pd.DataFrame, environment: str, rng: np.random.Generator) -> pd.DataFrame:
+    """Make sure every crew member has at least one red reading on the last simulated day,
+    so a fresh practice mission always has something to act on."""
+    df = df.copy()
+    last = df["ts"].max()
+    for member in df["astronaut_id"].unique():
+        rows = df[(df["astronaut_id"] == member) & (df["ts"] == last)]
+        if any(classify(r.indicator, r.value, environment) == RED for r in rows.itertuples()):
+            continue
+        for idx in rng.permutation(rows.index.to_numpy()):
+            v = _red_value(df.at[idx, "indicator"], environment, rng)
+            if v is not None:
+                df.at[idx, "value"] = v
+                break
+    return df
+
+
 def simulate_crew(
     crew: tuple[str, ...] = ("CDR", "PLT", "MS1", "MS2"),
     days: int = 30,
     environment: str = DEFAULT_ENVIRONMENT,
     seed: int = 42,
     start: date | None = None,
+    red_last_day: bool = False,
 ) -> pd.DataFrame:
-    """One dataset per crew member for ``environment`` (different seed per environment)."""
+    """One dataset per crew member for ``environment`` (different seed per environment).
+
+    ``red_last_day`` guarantees each member at least one red reading on the final day."""
     frames = []
     for i, member in enumerate(crew):
         prof_events = ENV_PROFILES.get(environment, ENV_PROFILES[DEFAULT_ENVIRONMENT])["events"]
@@ -182,4 +220,7 @@ def simulate_crew(
                                              if k not in ("fever_days", "missed_exercise_days")}
         env_seed = seed + 100 * list(ENVIRONMENTS).index(environment) if environment in ENVIRONMENTS else seed
         frames.append(simulate_mission(days, member, environment, env_seed + i, start, events))
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+    if red_last_day:
+        df = ensure_red_on_last_day(df, environment, np.random.default_rng(seed + 7))
+    return df
