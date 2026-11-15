@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.reset:
             for (a, env), _ in df.groupby(["astronaut_id", "environment"]):
                 db.delete_astronaut(conn, a, env)
-        n = db.insert_dataframe(conn, df)
+        n = db.insert_dataframe(conn, df, source="sim")
         print(f"inserted {n} readings into {db.db_path()}")
 
     if not args.csv and not args.db:

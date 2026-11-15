@@ -142,23 +142,21 @@ def simulate_mission(
     start: date | None = None,
     events: dict | None = None,
 ) -> pd.DataFrame:
-    """Generate ``days`` days of readings ending today (or starting at ``start``)."""
+    """Generate ``days`` daily reports ending yesterday (or starting at ``start``).
+
+    One value per indicator per day, stamped at midnight — the same shape as a real check-in.
+    Today is left empty on purpose: it belongs to the astronaut's own check-in.
+    """
     rng = np.random.default_rng(seed)
-    start = start or (date.today() - timedelta(days=days - 1))
+    start = start or (date.today() - timedelta(days=days))
     rows = []
     for d in range(days):
         day = start + timedelta(days=d)
         values = simulate_day(d, days, rng, environment, events)
         for ind, v in values.items():
-            if ind in MORNING:
-                t = time(7, int(rng.integers(0, 30)))
-            elif ind == "exercise_minutes":
-                t = time(17, int(rng.integers(0, 50)))
-            else:
-                t = time(20, int(rng.integers(0, 50)))
             rows.append(
                 {
-                    "ts": datetime.combine(day, t),
+                    "ts": datetime.combine(day, time()),
                     "astronaut_id": astronaut_id,
                     "environment": environment,
                     "indicator": ind,

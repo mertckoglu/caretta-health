@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -26,9 +26,9 @@ def test_deterministic_with_seed():
     assert not a["value"].equals(c["value"])
 
 
-def test_default_ends_today():
+def test_default_ends_yesterday():
     df = simulate_mission(days=5)
-    assert df["ts"].max().date() == date.today()
+    assert df["ts"].max().date() == date.today() - timedelta(days=1)
 
 
 def test_scripted_events_are_visible():
@@ -88,3 +88,11 @@ def test_each_environment_has_its_own_scenario():
     assert t["rover"]["spo2"].iloc[18:20].mean() < t["rover"]["spo2"].iloc[2:10].mean() - 2
     # datasets differ between environments
     assert not t["iss"]["heart_rate"].equals(t["mars_base"]["heart_rate"])
+
+
+def test_practice_data_is_daily_and_leaves_today_free():
+    # one report per day at midnight, ending yesterday: today belongs to the real check-in
+    df = simulate_mission(days=3)
+    assert (df["ts"].dt.date < date.today()).all()
+    assert (df["ts"].dt.time == datetime.min.time()).all()
+    assert not df.duplicated(["ts", "indicator"]).any()
