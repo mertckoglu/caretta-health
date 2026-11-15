@@ -88,6 +88,22 @@ def _worst_region(region_statuses: dict[str, str]) -> str:
     return ranked[0] if region_statuses.get(ranked[0]) in ("red", "yellow") else "heart"
 
 
+def _show_trends(ctx, region: str) -> None:
+    """Open a wide dialog with one full-size trend chart per indicator of ``region``."""
+    import streamlit as st
+
+    from app.core.indicators import indicators_for_region
+    from app.ui.charts import indicator_chart
+
+    @st.dialog(f"{REGIONS[region]['name']} · trends", width="large")
+    def _dialog() -> None:
+        for ind in indicators_for_region(region):
+            st.plotly_chart(indicator_chart(ctx.df, ind.key, ctx.environment, height=380),
+                            width="stretch", config={"displayModeBar": False}, key=f"chart_{ind.key}")
+
+    _dialog()
+
+
 def render_body_section(ctx, height: int = 620) -> None:
     """Particle body on the left, details of the selected body system on the right."""
     import streamlit as st
@@ -164,10 +180,8 @@ def render_body_section(ctx, height: int = 620) -> None:
                 st.caption("Care team looped in. A short note goes out with the next downlink.")
 
         p1, p2 = st.columns(2)
-        with p1.popover("See the trends", width="stretch"):
-            for ind in indicators_for_region(region):
-                st.plotly_chart(indicator_chart(ctx.df, ind.key, ctx.environment, height=240),
-                                width="stretch", config={"displayModeBar": False}, key=f"chart_{ind.key}")
+        if p1.button("See the trends", width="stretch", key=f"trends_{region}"):
+            _show_trends(ctx, region)
         with p2.popover("How to measure", width="stretch"):
             for ind in indicators_for_region(region):
                 st.markdown(f"**{ind.name}.** {ind.how_to_measure}")
