@@ -56,7 +56,7 @@ THEME_CSS = """
   background-size: 720px 720px;
 }
 @keyframes ct-breathe { from { opacity: .85; } to { opacity: 1; } }
-[data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stSidebar"] { position: relative; z-index: 1; background: transparent; }
+[data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stSidebar"] { z-index: 1; background: transparent; }
 [data-testid="stSidebar"] > div:first-child { background: #11153a; }
 
 /* type */
