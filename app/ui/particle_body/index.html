@@ -4,34 +4,39 @@
 <meta charset="utf-8" />
 <title>Caretta particle body</title>
 <style>
+  @font-face { font-family: "Inter"; src: url("fonts/inter-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+  @font-face { font-family: "Fraunces"; src: url("fonts/fraunces-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden;
-    font-family: "Source Sans Pro", "Segoe UI", system-ui, sans-serif; }
-  #wrap { position: relative; width: 100%; border-radius: 16px; overflow: hidden; background: #04060d;
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif; }
+  #wrap { position: relative; width: 100%; border-radius: 16px; overflow: hidden; background: #0B0F2A;
     user-select: none; -webkit-user-select: none; }
   canvas { display: block; width: 100%; touch-action: none; }
   #hud { position: absolute; top: 12px; left: 16px; right: 16px; color: #fff; pointer-events: none;
     text-shadow: 0 1px 4px #000; }
-  #hud .t { font-size: 19px; font-weight: 700; letter-spacing: .2px; }
+  #hud .t { font-family: "Fraunces", Georgia, serif; font-size: 21px; font-weight: 600; letter-spacing: -.2px; }
   #hud .s { font-size: 12px; opacity: .65; margin-top: 2px; }
   .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 700;
     margin-left: 8px; vertical-align: 2px; color: #fff; text-shadow: none; }
   #labels { position: absolute; inset: 0; pointer-events: none; transition: opacity .45s; }
-  .lb { position: absolute; display: flex; align-items: center; gap: 6px; transform: translate(-5px, -50%);
-    font-size: 12px; font-weight: 600; color: #f3f5ff; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 6px #000; }
-  .lb.l { flex-direction: row-reverse; transform: translate(calc(-100% + 5px), -50%); }
-  .pu { width: 10px; height: 10px; border-radius: 50%; background: var(--c); flex: none;
+  .lb { position: absolute; display: flex; align-items: center; gap: 0; transform: translate(-6px, -50%); }
+  .lb.l { flex-direction: row-reverse; transform: translate(calc(-100% + 6px), -50%); }
+  .lb__line { width: 14px; height: 1px; background: color-mix(in srgb, var(--c) 70%, transparent); }
+  .lb__txt { font-size: 12.5px; font-weight: 600; line-height: 1; color: #f4f5ff; white-space: nowrap;
+    padding: 5px 9px; border-radius: 999px; background: rgba(11, 15, 42, .86);
+    border: 1px solid color-mix(in srgb, var(--c) 65%, transparent); box-shadow: 0 2px 10px rgba(5, 7, 30, .55); }
+  .pu { width: 10px; height: 10px; border-radius: 50%; background: var(--c); flex: none; border: 2px solid #0b0f2a;
     animation: pu 1.8s ease-out infinite; }
   @keyframes pu { 0% { box-shadow: 0 0 0 0 var(--c); } 70%, 100% { box-shadow: 0 0 0 12px rgba(0,0,0,0); } }
   #tip { position: absolute; pointer-events: none; padding: 4px 9px; border-radius: 8px; font-size: 12px;
-    background: rgba(10,14,30,.88); color: #fff; border: 1px solid rgba(255,255,255,.18); opacity: 0;
+    background: rgba(20,26,68,.92); color: #fff; border: 1px solid rgba(255,255,255,.18); opacity: 0;
     transition: opacity .15s; white-space: nowrap; }
   #chips { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: 6px;
-    justify-content: center; padding: 10px 10px 12px; background: linear-gradient(rgba(4,6,13,0), rgba(4,6,13,.92) 40%); }
+    justify-content: center; padding: 10px 10px 12px; background: linear-gradient(rgba(11,15,42,0), rgba(11,15,42,.92) 40%); }
   .chip { border: 1px solid rgba(255,255,255,.22); background: rgba(255,255,255,.06); color: #e9ecff;
     border-radius: 999px; padding: 4px 11px; font-size: 12px; cursor: pointer; display: flex; align-items: center;
     gap: 6px; font-family: inherit; transition: background .2s, color .2s, border-color .2s; }
   .chip:hover { background: rgba(255,255,255,.16); }
-  .chip.on { background: #fff; color: #0b0f1e; border-color: #fff; }
+  .chip.on { background: #F5B041; color: #1d1400; border-color: #F5B041; }
   .chip:focus-visible { outline: 2px solid #8fb3ff; outline-offset: 2px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 </style>
@@ -69,6 +74,9 @@
   let cssW = 0, cssH = 640, dpr = 1, cw = 0, ch = 0, sc = 1, offX = 0, offY = 0;
   let img = null, data = null;
   let N = 0, X, Y, TX, TY, SX, SY, MX, MY, DL, PH, OX, OY, CO, CN;
+  // status visuals: per-particle alert level (0 none, 1 yellow, 2 red), tint target and tint strength
+  let LV, CA, MIXA, alertsOn = false, levels = {};
+  const RK = ["brain", "heart", "lungs", "metabolism", "immune", "musculoskeletal", "whole_body"];
   let view = null, trans = null, ready = false, height = 640;
   let regions = [], regionMap = {}, overall = null;
   const cache = {};
@@ -560,6 +568,7 @@
     SX = new Float32Array(N); SY = new Float32Array(N); MX = new Float32Array(N); MY = new Float32Array(N);
     DL = new Float32Array(N); PH = new Float32Array(N); OX = new Float32Array(N); OY = new Float32Array(N);
     CO = new Uint32Array(N); CN = new Uint32Array(N);
+    LV = new Uint8Array(N); CA = new Uint32Array(N); MIXA = new Float32Array(N);
     for (let i = 0; i < N; i++) {
       X[i] = TX[i] = -150 + Math.random() * (SW + 300);
       Y[i] = TY[i] = -150 + Math.random() * (SH + 300);
@@ -592,9 +601,57 @@
     updateHud(); updateChips();
   }
 
+  function hexRgb(h) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(h || ""); const v = m ? parseInt(m[1], 16) : 0xffffff;
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  }
+
+  // Region of every particle in the overview (cached per shape)
+  function regionIndex(sh) {
+    if (sh.reg) return sh.reg;
+    const reg = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      const k = regionAt(sh.pos[2 * i], sh.pos[2 * i + 1]);
+      reg[i] = k ? RK.indexOf(k) + 1 : 0;
+    }
+    return (sh.reg = reg);
+  }
+
+  // Tint + pulse particles of body systems that are yellow (drifting) or red (needs care / act now)
+  function computeAlerts() {
+    if (!N || !view) return;
+    alertsOn = false;
+    const whole = levels.whole_body || 0;
+    const sh = cache[view];
+    const reg = view === "overview" && bodyMask && sh ? regionIndex(sh) : null;
+    for (let i = 0; i < N; i++) {
+      let key = view === "overview" ? (reg ? RK[reg[i] - 1] : null) : view;
+      let lvl = key ? (levels[key] || 0) : 0;
+      // whole body: strong tint so the unwell area stands out at a glance;
+      // single organ: a light wash only, so its anatomy (folds, vessels, airways) stays readable
+      let mix = !lvl ? 0 : view === "overview" ? 0.9 : (lvl === 2 ? 0.3 : 0.24);
+      if (!lvl && whole && view === "overview") { lvl = whole; mix = 0.3; key = "whole_body"; }
+      LV[i] = lvl; MIXA[i] = mix;
+      if (lvl) {
+        alertsOn = true;
+        // particles are blended additively, so the tint must be saturated and dim or dense areas wash out to white
+        const [ar, ag, ab] = tintRgb[key] || [255, 255, 255], c = CN[i];
+        const r = (c >>> 16) & 255, g = (c >>> 8) & 255, b = c & 255;
+        CA[i] = ((r + (ar - r) * mix) << 16) | ((g + (ag - g) * mix) << 8) | (b + (ab - b) * mix);
+      }
+    }
+  }
+  let alertRgb = {}, tintRgb = {};
+  function tintFor(rgb) {           // same hue, fully saturated, dimmed for additive blending
+    const mx = Math.max(...rgb), mn = Math.min(...rgb);
+    const sat = rgb.map((v) => (mx === mn ? v : ((v - mn) / (mx - mn)) * 255));
+    return sat.map((v) => Math.round(v * 0.5));
+  }
+
   function finishTrans() {
     trans = null;
     CO.set(CN);
+    computeAlerts();
     if (view === "overview") labelsEl.style.opacity = "1";
     if (pending) { post("streamlit:setComponentValue", { value: pending, dataType: "json" }); pending = null; }
     schedulePrefetch();
@@ -624,7 +681,7 @@
     // background: deep-space gradient + a few stars, rendered once
     bg.width = cw; bg.height = ch;
     const gr = bgctx.createRadialGradient(cw / 2, ch * 0.42, 0, cw / 2, ch * 0.42, Math.max(cw, ch) * 0.75);
-    gr.addColorStop(0, "#131c3a"); gr.addColorStop(0.55, "#080c1c"); gr.addColorStop(1, "#03040a");
+    gr.addColorStop(0, "#232a6b"); gr.addColorStop(0.5, "#141a48"); gr.addColorStop(1, "#0b0f2a");
     bgctx.fillStyle = gr; bgctx.fillRect(0, 0, cw, ch);
     const r = rng(99);
     for (let k = 0; k < 160; k++) {
@@ -639,7 +696,7 @@
   function frame(now) {
     requestAnimationFrame(frame);
     if (!visible || !N || !data) return;
-    const animating = trans !== null || mouse.in || repelActive;
+    const animating = trans !== null || mouse.in || repelActive || alertsOn;
     if (!animating && now - lastDraw < 33) return;       // idle shimmer at ~30 fps
     lastDraw = now;
     let el = 0;
@@ -662,6 +719,18 @@
         x = TX[i] + Math.sin(t * 1.7 + ph) * 0.75;
         y = TY[i] + Math.cos(t * 1.3 + ph * 1.3) * 0.75;
         c = CN[i];
+        const lv = LV[i];
+        if (lv) {
+          // yellow breathes slowly; red pulses faster with a slight tremor
+          const f = 0.5 + 0.5 * Math.sin(t * (lv === 2 ? 5.2 : 2.6) + ph * 0.25);
+          const soft = MIXA[i] < 0.5;     // organ view: gentle colour, the pulse is carried by brightness
+          const k = soft ? 0.6 + 0.4 * f : 0.55 + 0.45 * f, bright = soft ? 0.9 + 0.22 * f : 0.82 + 0.38 * f, ca = CA[i];
+          const r0 = (c >>> 16) & 255, g0 = (c >>> 8) & 255, b0 = c & 255;
+          const r1 = (ca >>> 16) & 255, g1 = (ca >>> 8) & 255, b1 = ca & 255;
+          c = (Math.min(255, (r0 + (r1 - r0) * k) * bright) << 16) | (Math.min(255, (g0 + (g1 - g0) * k) * bright) << 8)
+            | Math.min(255, (b0 + (b1 - b0) * k) * bright);
+          if (lv === 2 && MIXA[i] > 0.3) { x += Math.sin(t * 23 + ph * 7) * 0.9; y += Math.cos(t * 19 + ph * 5) * 0.9; }
+        }
       }
       X[i] = x; Y[i] = y;
       let ox = OX[i], oy = OY[i];
@@ -689,17 +758,48 @@
     if (trans && el >= 1) finishTrans();
     bctx.putImageData(img, 0, 0);
     ctx.globalCompositeOperation = "copy"; ctx.drawImage(bg, 0, 0);
+    if (!tr && view !== "overview" && (levels[view] || 0)) drawOrganGlow(t);   // behind the particles
     ctx.globalCompositeOperation = "lighter";
     gctx.clearRect(0, 0, glow.width, glow.height);
     gctx.drawImage(buf, 0, 0, glow.width, glow.height);       // cheap bloom: downsample…
     ctx.globalAlpha = 0.9; ctx.drawImage(glow, 0, 0, cw, ch); // …and upscale smoothly
     ctx.globalAlpha = 1; ctx.drawImage(buf, 0, 0);
+    if (!tr && view === "overview" && alertsOn) drawHalos(t);
     ctx.globalCompositeOperation = "source-over";
+  }
+
+  // single organ: a soft coloured glow behind the shape tells the status; the organ itself stays readable
+  function drawOrganGlow(t) {
+    const lvl = levels[view], [r, g, b] = alertRgb[view] || [255, 255, 255];
+    const f = 0.5 + 0.5 * Math.sin(t * (lvl === 2 ? 5.2 : 2.6));
+    const cx = offX + 300 * sc, cy = offY + 440 * sc, rad = 360 * sc * (0.94 + 0.08 * f);
+    ctx.globalCompositeOperation = "source-over";   // true hue over the navy background
+    const gr = ctx.createRadialGradient(cx, cy, rad * 0.15, cx, cy, rad);
+    gr.addColorStop(0, `rgba(${r},${g},${b},${(lvl === 2 ? 0.42 : 0.55) * (0.6 + 0.4 * f)})`);
+    gr.addColorStop(0.55, `rgba(${r},${g},${b},${(lvl === 2 ? 0.14 : 0.2) * (0.6 + 0.4 * f)})`);
+    gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, cw, ch);
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function drawHalos(t) {
+    for (const key of RK) {
+      const lvl = levels[key] || 0, a = ANCHORS[key];
+      if (!lvl || !a || key === "whole_body") continue;
+      const [r, g, b] = alertRgb[key];
+      const f = 0.5 + 0.5 * Math.sin(t * (lvl === 2 ? 5.2 : 2.6));
+      const cx = offX + (BX + a[0] * BS) * sc, cy = offY + (BY + a[1] * BS) * sc;
+      const rad = (lvl === 2 ? 60 : 46) * sc * (0.9 + 0.2 * f);
+      const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+      gr.addColorStop(0, `rgba(${r},${g},${b},${(lvl === 2 ? 0.34 : 0.22) * (0.6 + 0.4 * f)})`);
+      gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+      ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(cx, cy, rad, 0, TAU); ctx.fill();
+    }
   }
 
   // ------------------------------------------------------ DOM: HUD, chips, labels
   const ANCHORS = {
-    brain: [0, 30, "r"], lungs: [-42, 232, "l"], heart: [14, 248, "r"], metabolism: [4, 322, "r"],
+    brain: [0, 34, "r"], lungs: [-38, 226, "l"], heart: [14, 250, "r"], metabolism: [10, 330, "r"],
     immune: [-112, 345, "l"], musculoskeletal: [44, 610, "r"], whole_body: [104, 12, "r"],
   };
 
@@ -708,10 +808,15 @@
   function updateHud() {
     if (!view) return;
     let title, st;
-    if (view === "overview") { title = "Full body"; st = overall; }
+    if (view === "overview") { title = "Whole body"; st = overall; }
     else { const r = regionMap[view] || {}; title = r.name || view; st = r; }
     const pill = st && st.color ? '<span class="pill" style="background:' + esc(st.color) + '">' + esc(st.icon || "") + " " + esc(st.label || "") + "</span>" : "";
-    const hint = view === "overview" ? "Click a body system — or hover to push the particles" : esc(N.toLocaleString()) + " particles · choose “Full body” to return";
+    const unwell = regions.filter((r) => r.status === "red" || r.status === "yellow")
+      .sort((a, b) => (b.status === "red") - (a.status === "red"));
+    const hint = view === "overview"
+      ? (unwell.length ? "Needs a look: " + unwell.map((r) => esc(r.short) + " (" + esc(r.label) + ")").join(" · ")
+                       : "Everything looks steady. Click any part of the body to take a closer look")
+      : "Choose “Whole body” below to go back";
     hud.innerHTML = '<div class="t">' + esc(title) + pill + '</div><div class="s">' + hint + "</div>";
   }
 
@@ -721,11 +826,11 @@
 
   function buildChips() {
     chipsEl.innerHTML = "";
-    const items = [{ key: "overview", short: "Full body", color: overall && overall.color }].concat(regions);
+    const items = [{ key: "overview", short: "Whole body", color: overall && overall.color }].concat(regions);
     for (const it of items) {
       const b = document.createElement("button");
       b.className = "chip"; b.dataset.k = it.key; b.type = "button";
-      b.title = it.name ? it.name + (it.label ? " — " + it.label : "") : "Full body";
+      b.title = it.name ? it.name + (it.label ? ": " + it.label : "") : "Whole body";
       b.innerHTML = '<span class="dot" style="background:' + esc(it.color || "#9aa0a6") + '"></span>' + esc(it.short || it.key);
       b.addEventListener("click", () => choose(it.key));
       chipsEl.appendChild(b);
@@ -739,7 +844,8 @@
       const a = ANCHORS[r.key]; if (!a) continue;
       const el = document.createElement("div");
       el.className = "lb" + (a[2] === "l" ? " l" : ""); el.dataset.k = r.key;
-      el.innerHTML = '<span class="pu" style="--c:' + esc(r.color) + '"></span><span>' + esc(r.short) + "</span>";
+      el.style.setProperty("--c", r.color);
+      el.innerHTML = '<span class="pu"></span><span class="lb__line"></span><span class="lb__txt">' + esc(r.short) + "</span>";
       labelsEl.appendChild(el);
     }
     placeLabels();
@@ -791,6 +897,11 @@
   function onRender(a) {
     regions = Array.isArray(a.regions) ? a.regions : [];
     regionMap = {}; for (const r of regions) regionMap[r.key] = r;
+    levels = {}; alertRgb = {};
+    for (const r of regions) {
+      levels[r.key] = r.status === "red" ? 2 : r.status === "yellow" ? 1 : 0;
+      alertRgb[r.key] = hexRgb(r.color); tintRgb[r.key] = tintFor(alertRgb[r.key]);
+    }
     overall = a.overall || null;
     const h = Math.max(380, Math.min(1200, +a.height || 640));
     buildChips();
@@ -803,6 +914,7 @@
     buildLabels();
     if (ready && chipsEl.offsetHeight !== lastChipH) layout();
     if (!pending) setView(a.view || "overview");   // ignore stale args while a local choice is in flight
+    if (!trans) computeAlerts();
     updateHud(); updateChips();
   }
 
@@ -822,8 +934,12 @@
   if (window.parent === window) {
     const demo = ["brain","lungs","heart","metabolism","immune","musculoskeletal","whole_body"];
     const names = { brain: "Brain & behaviour", lungs: "Lungs & breathing", heart: "Heart & blood vessels", metabolism: "Metabolism & nutrition", immune: "Immune system", musculoskeletal: "Bones & muscles", whole_body: "Whole-body radiation" };
-    onRender({ view: "overview", height: 680, overall: { color: "#E0A800", icon: "▲", label: "Watch" },
-      regions: demo.map((k) => ({ key: k, name: names[k], short: names[k].split(" ")[0], color: "#2E9D5B", icon: "●", label: "Nominal" })) });
+    onRender({ view: "overview", height: 680, overall: { color: "#FF7A7A", icon: "■", label: "Act now" },
+      regions: demo.map((k) => {
+        const st = { brain: "yellow", lungs: "red" }[k] || "green";
+        const c = { green: ["#4FD1A5", "●", "Smooth sailing"], yellow: ["#EAD94C", "▲", "Shifting tides"], red: ["#FF7A7A", "■", "Act now"] }[st];
+        return { key: k, name: names[k], short: names[k].split(" ")[0], status: st, color: c[0], icon: c[1], label: c[2] };
+      }) });
   }
 })();
 </script>

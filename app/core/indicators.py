@@ -14,31 +14,31 @@ from dataclasses import dataclass, field
 HAZARDS: dict[str, dict[str, str]] = {
     "radiation": {
         "name": "Space radiation",
-        "icon": "☢️",
+        "icon": "radiation",
         "summary": "Galactic cosmic rays and solar particle events raise cancer risk and can "
         "affect the central nervous system, heart and immune system.",
     },
     "isolation": {
         "name": "Isolation & confinement",
-        "icon": "🧠",
+        "icon": "isolation",
         "summary": "Small crews in small volumes for months: sleep loss, circadian disruption, "
         "low mood, fatigue and team conflict.",
     },
     "distance": {
         "name": "Distance from Earth",
-        "icon": "📡",
+        "icon": "signal",
         "summary": "Communication delays and no quick return: the crew must detect and treat "
         "problems autonomously with limited supplies.",
     },
     "gravity": {
         "name": "Gravity fields",
-        "icon": "🪐",
+        "icon": "planet",
         "summary": "Microgravity and partial gravity shift body fluids, unload bones and muscles "
         "and decondition the heart; gravity transitions disturb balance.",
     },
     "environment": {
         "name": "Hostile & closed environment",
-        "icon": "🛰️",
+        "icon": "satellite",
         "summary": "Recycled air (CO₂), noise, microbes, dust and food system limits affect "
         "immunity, nutrition and comfort.",
     },

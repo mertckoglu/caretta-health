@@ -5,6 +5,7 @@ defaults to ``data/caretta.db`` in the repository.
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import uuid
@@ -41,6 +42,17 @@ CREATE TABLE IF NOT EXISTS photos (
     mime          TEXT    NOT NULL DEFAULT 'image/jpeg'
 );
 CREATE INDEX IF NOT EXISTS idx_photos_astro_ts ON photos (astronaut_id, ts);
+CREATE TABLE IF NOT EXISTS diagnoses (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    astronaut_id  TEXT    NOT NULL,
+    ts            TEXT    NOT NULL,
+    environment   TEXT    NOT NULL DEFAULT 'iss',
+    outcome_id    TEXT    NOT NULL,
+    title         TEXT    NOT NULL,
+    urgency       TEXT    NOT NULL,
+    details       TEXT    NOT NULL           -- full assessment as JSON
+);
+CREATE INDEX IF NOT EXISTS idx_diagnoses_astro_ts ON diagnoses (astronaut_id, ts);
 """
 
 #: Photo categories offered in the check-in (key -> label)
@@ -83,7 +95,8 @@ def connect(path: str | Path | None = None) -> sqlite3.Connection:
 def _ts(ts: datetime | str | None) -> str:
     if ts is None:
         return datetime.now().isoformat(timespec="seconds")
-    return pd.Timestamp(ts).isoformat()
+    # one fixed format (seconds precision) so every stored timestamp parses the same way
+    return pd.Timestamp(ts).floor("s").isoformat(timespec="seconds")
 
 
 def insert_reading(
@@ -156,7 +169,7 @@ def fetch_readings(
     rows = conn.execute(sql, params).fetchall()
     df = pd.DataFrame([dict(r) for r in rows], columns=COLUMNS)
     if not df.empty:
-        df["ts"] = pd.to_datetime(df["ts"])
+        df["ts"] = pd.to_datetime(df["ts"], format="ISO8601")  # tolerant of older rows with microseconds
     return df
 
 
@@ -288,7 +301,7 @@ def fetch_photos(
     rows = conn.execute(sql + " ORDER BY ts DESC, id DESC", params).fetchall()
     df = pd.DataFrame([dict(r) for r in rows], columns=PHOTO_COLUMNS)
     if not df.empty:
-        df["ts"] = pd.to_datetime(df["ts"])
+        df["ts"] = pd.to_datetime(df["ts"], format="ISO8601")  # tolerant of older rows with microseconds
     return df
 
 
@@ -316,3 +329,52 @@ def delete_photo(conn: sqlite3.Connection, photo_id: int) -> bool:
     photo_path(conn, row["filename"]).unlink(missing_ok=True)
     (photo_dir(conn) / thumb_name(row["filename"])).unlink(missing_ok=True)
     return True
+
+
+# --------------------------------------------------------------- diagnoses --
+DIAGNOSIS_COLUMNS = ["id", "astronaut_id", "ts", "environment", "outcome_id", "title", "urgency", "details"]
+
+
+def insert_diagnosis(
+    conn: sqlite3.Connection,
+    astronaut_id: str,
+    assessment: dict,
+    environment: str = DEFAULT_ENVIRONMENT,
+    ts: datetime | str | None = None,
+) -> int:
+    """Store a finished triage (``Assessment.to_dict()``)."""
+    if environment not in ENVIRONMENTS:
+        raise ValueError(f"Unknown environment: {environment!r}")
+    for key in ("outcome_id", "title", "urgency"):
+        if not assessment.get(key):
+            raise ValueError(f"assessment is missing {key!r}")
+    cur = conn.execute(
+        "INSERT INTO diagnoses (astronaut_id, ts, environment, outcome_id, title, urgency, details) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (astronaut_id.strip(), _ts(ts), environment, assessment["outcome_id"], assessment["title"],
+         assessment["urgency"], json.dumps(assessment, ensure_ascii=False)),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def fetch_diagnoses(
+    conn: sqlite3.Connection, astronaut_id: str | None = None, environment: str | None = None
+) -> pd.DataFrame:
+    sql, params = "SELECT * FROM diagnoses WHERE 1=1", []
+    for col, val in (("astronaut_id", astronaut_id), ("environment", environment)):
+        if val:
+            sql += f" AND {col} = ?"
+            params.append(val)
+    rows = conn.execute(sql + " ORDER BY ts DESC, id DESC", params).fetchall()
+    df = pd.DataFrame([dict(r) for r in rows], columns=DIAGNOSIS_COLUMNS)
+    if not df.empty:
+        df["ts"] = pd.to_datetime(df["ts"], format="ISO8601")  # tolerant of older rows with microseconds
+        df["details"] = df["details"].map(json.loads)
+    return df
+
+
+def delete_diagnosis(conn: sqlite3.Connection, diagnosis_id: int) -> bool:
+    cur = conn.execute("DELETE FROM diagnoses WHERE id = ?", (diagnosis_id,))
+    conn.commit()
+    return cur.rowcount > 0
